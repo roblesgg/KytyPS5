@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/resourceProbe.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -169,6 +171,35 @@ private:
 			m_calls[i] = calls;
 		}
 		Write("\n");
+		if (ResourceProbe::Enabled()) {
+			const auto resource = ResourceProbe::Snapshot();
+			std::snprintf(
+			    line, sizeof(line),
+			    "[resource-probe] t=%.1fs window=%.3fs programs=%llu indirect=%llu bounded=%llu",
+			    std::chrono::duration<double>(now - m_start).count(), seconds,
+			    static_cast<unsigned long long>(resource.programs - m_resource.programs),
+			    static_cast<unsigned long long>(resource.indirect_tables -
+				                                m_resource.indirect_tables),
+			    static_cast<unsigned long long>(resource.bounded_tables -
+				                                m_resource.bounded_tables));
+			Write(line);
+			std::snprintf(
+			    line, sizeof(line),
+			    " table_words=%llu candidates=%llu unique=%llu comparisons=%llu",
+			    static_cast<unsigned long long>(resource.table_words - m_resource.table_words),
+			    static_cast<unsigned long long>(resource.candidate_calls -
+				                                m_resource.candidate_calls),
+			    static_cast<unsigned long long>(resource.unique_descriptors -
+				                                m_resource.unique_descriptors),
+			    static_cast<unsigned long long>(resource.dedup_comparisons -
+				                                m_resource.dedup_comparisons));
+			Write(line);
+			std::snprintf(line, sizeof(line), " max_candidates_seen=%llu max_words_seen=%llu\n",
+			              static_cast<unsigned long long>(resource.max_candidates),
+			              static_cast<unsigned long long>(resource.max_words));
+			Write(line);
+			m_resource = resource;
+		}
 		m_flips    = flips;
 		m_previous = now;
 	}
@@ -178,6 +209,7 @@ private:
 	std::array<uint64_t, KindCount> m_ns {};
 	std::array<uint64_t, KindCount> m_calls {};
 	uint64_t                        m_flips = 0;
+	ResourceProbe::Totals           m_resource {};
 	std::jthread                    m_thread;
 };
 } // namespace PerfStats
