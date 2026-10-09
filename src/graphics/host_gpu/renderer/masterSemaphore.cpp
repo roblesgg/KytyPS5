@@ -1,3 +1,4 @@
+#include "common/perfStats.h"
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
 #include "common/assert.h"
@@ -49,7 +50,11 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	wait_info.pSemaphores    = &m_semaphore;
 	wait_info.pValues        = &tick;
 
-	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
+	vk::Result result;
+	{
+		PerfStats::Scope perf_wait(PerfStats::Kind::HostWait);
+		result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
+	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	Refresh();
 }

@@ -1,3 +1,4 @@
+#include "common/perfStats.h"
 #include "graphics/presentation/videoOut.h"
 
 #include "common/abi.h"
@@ -1281,6 +1282,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 		requests[i - 1].cfg->mutex.Unlock();
 	}
 	if (due) {
+		PerfStats::Flip();
 		Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
 		if (Config::GraphicsDebugDumpEnabled() &&
 		    Config::GetPrintfDirection() != Config::LogDirection::Silent) {

@@ -1,3 +1,4 @@
+#include "common/perfStats.h"
 #include "common/archive.h"
 #include "common/common.h"
 #include "common/dateTime.h"
@@ -485,6 +486,7 @@ static int Main(int argc, char* argv[]) {
 		return 0;
 	}
 
+	PerfStats::Session perf_session;
 	Run(options);
 
 	return 0;

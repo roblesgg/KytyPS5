@@ -1,3 +1,4 @@
+#include "common/perfStats.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
 #include "common/assert.h"
@@ -327,6 +328,7 @@ struct PipelineCache::ProgramCache {
 			}
 		}
 
+		PerfStats::Scope perf_shader(PerfStats::Kind::Shader);
 		ShaderStageInputInfo stage_input {};
 		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
 			stage_input.vertex = &input_info;
