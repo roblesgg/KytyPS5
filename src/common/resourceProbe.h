@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 
@@ -20,8 +21,17 @@ struct Totals {
 
 inline bool Enabled() {
 	static const bool enabled = [] {
+#ifdef _MSC_VER
+		char*       value  = nullptr;
+		std::size_t length = 0;
+		if (_dupenv_s(&value, &length, "KYTY_RESOURCE_PROBE") != 0) return false;
+		const bool result = value != nullptr && length == 2 && value[0] == '1';
+		std::free(value);
+		return result;
+#else
 		const char* value = std::getenv("KYTY_RESOURCE_PROBE");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
+#endif
 	}();
 	return enabled;
 }
