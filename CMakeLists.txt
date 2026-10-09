@@ -49,6 +49,12 @@ include("${KYTY_SOURCE_DIR}/utils.cmake")
 include(CTest)
 
 option(KYTY_ENABLE_CLANG_TIDY "Run clang-tidy checks during builds" OFF)
+option(KYTY_DIRTY_RANGE_FASTPATH "Use the experimental bounded dirty-bit query" OFF)
+if(KYTY_DIRTY_RANGE_FASTPATH)
+    add_compile_definitions(KYTY_DIRTY_RANGE_FASTPATH=1)
+else()
+    add_compile_definitions(KYTY_DIRTY_RANGE_FASTPATH=0)
+endif()
 
 set(KYTY_BUILD_ORIGIN "Source" CACHE STRING "Build provenance shown in diagnostics")
 set_property(CACHE KYTY_BUILD_ORIGIN PROPERTY STRINGS Source Official Fork)
