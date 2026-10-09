@@ -12,6 +12,15 @@ using Bits = Common::BitArray<128>;
 
 static_assert(sizeof(Common::BitArray<1024>) == 128);
 
+static_assert([] {
+  Bits bits;
+  bits.Set(63);
+  bits.Set(64);
+  return bits.AnyInRange(63, 64) && bits.AnyInRange(64, 65) &&
+         !bits.AnyInRange(0, 63) && !bits.AnyInRange(65, 128) &&
+         !bits.AnyInRange(64, 64) && !bits.AnyInRange(128, 128);
+}());
+
 void Check(bool value, const char *message) {
   if (!value) {
     std::fprintf(stderr, "BitArrayTests: failed: %s\n", message);
@@ -113,6 +122,64 @@ void TestRangeDiscoveryAndIteration() {
   Check(range_index == expected.size(), "range iterator omitted a run");
 }
 
+void TestAnyInRangeBoundaries() {
+  Bits bits;
+  const auto check_intervals = [&bits] {
+    for (size_t start = 0; start <= 128; start++) {
+      for (size_t end = start; end <= 128; end++) {
+        Check(bits.AnyInRange(start, end) ==
+                  (bits.FirstRangeFrom(start).first < end),
+              "bounded query differs from range discovery");
+      }
+    }
+  };
+  check_intervals();
+  for (size_t bit = 0; bit < 128; bit++) {
+    bits.Clear();
+    bits.Set(bit);
+    check_intervals();
+  }
+  bits.Fill();
+  check_intervals();
+  bits.UnsetRange(1, 127);
+  check_intervals();
+
+  bits.Clear();
+  for (const auto [start, end] :
+       {Bits::Range{0, 64}, Bits::Range{64, 128}, Bits::Range{63, 65},
+        Bits::Range{1, 127}}) {
+    bits.Clear();
+    if (start != 0) bits.Set(start - 1);
+    if (end != 128) bits.Set(end);
+    Check(!bits.AnyInRange(start, end),
+          "bits outside a bounded interval produced a hit");
+    bits.Set(end - 1);
+    Check(bits.AnyInRange(start, end), "last included bit was ignored");
+  }
+  Check(!bits.AnyInRange(64, 63) && !bits.AnyInRange(0, 129) &&
+            !bits.AnyInRange(128, 129),
+        "invalid bounded interval produced a hit");
+
+  Common::BitArray<1024> tracker_bits;
+  constexpr std::array<size_t, 16> boundaries{
+      0, 1, 63, 64, 65, 127, 128, 129,
+      255, 256, 257, 511, 512, 513, 1023, 1024};
+  for (size_t bit = 0; bit < 1024; bit++) {
+    tracker_bits.Clear();
+    tracker_bits.Set(bit);
+    for (const auto start : boundaries) {
+      for (const auto end : boundaries) {
+        if (end < start) continue;
+        Check(tracker_bits.AnyInRange(start, end) ==
+                  (bit >= start && bit < end) &&
+                  tracker_bits.AnyInRange(start, end) ==
+                      (tracker_bits.FirstRangeFrom(start).first < end),
+              "tracker-sized bounded query ignored a word boundary");
+      }
+    }
+  }
+}
+
 void TestRandomizedDifferential() {
   Bits bits;
   std::array<bool, 128> reference{};
@@ -192,11 +259,18 @@ void TestRandomizedDifferential() {
         masked_start +
         static_cast<size_t>(next_random() % (129 - masked_start));
     const Bits masked(bits, masked_start, masked_end);
+    bool expected_in_range = false;
     for (size_t index = 0; index < reference.size(); index++) {
       Check(masked.Get(index) == (index >= masked_start && index < masked_end &&
                                   reference[index]),
             "randomized masked constructor diverged");
+      expected_in_range |= index >= masked_start && index < masked_end &&
+                           reference[index];
     }
+    Check(bits.AnyInRange(masked_start, masked_end) == expected_in_range &&
+              bits.AnyInRange(masked_start, masked_end) ==
+                  (bits.FirstRangeFrom(masked_start).first < masked_end),
+          "randomized bounded query diverged");
 
     size_t first_begin = 0;
     while (first_begin < reference.size() && !reference[first_begin]) {
@@ -278,6 +352,22 @@ void TestTrackerSizedRandomizedDifferential() {
             "tracker-sized randomized bit state diverged");
     }
 
+    for (size_t query = 0; query < 8; query++) {
+      const auto start =
+          static_cast<size_t>(next_random() % (reference.size() + 1));
+      const auto end =
+          start + static_cast<size_t>(next_random() %
+                                      (reference.size() + 1 - start));
+      bool expected_in_range = false;
+      for (auto index = start; index < end; index++) {
+        expected_in_range |= reference[index];
+      }
+      Check(bits.AnyInRange(start, end) == expected_in_range &&
+                bits.AnyInRange(start, end) ==
+                    (bits.FirstRangeFrom(start).first < end),
+            "tracker-sized randomized bounded query diverged");
+    }
+
     size_t expected = 0;
     for (const auto [begin, end] : bits) {
       while (expected < reference.size() && !reference[expected]) {
@@ -303,6 +393,7 @@ int main() {
   TestPointAndRangeOperations();
   TestMaskedConstructionAndBitwiseOperations();
   TestRangeDiscoveryAndIteration();
+  TestAnyInRangeBoundaries();
   TestRandomizedDifferential();
   TestTrackerSizedRandomizedDifferential();
   std::puts("BitArrayTests: all cases passed");

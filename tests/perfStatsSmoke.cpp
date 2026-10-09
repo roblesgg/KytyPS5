@@ -21,6 +21,18 @@ int main() {
       });
     }
     workers.clear();
+#if !KYTY_PERF_DETAIL
+    {
+      PerfStats::Scope draw(PerfStats::Kind::Draw);
+      PerfStats::Scope sync(PerfStats::Kind::BufferSync);
+    }
+    assert(PerfStats::Data()
+               .timings[static_cast<size_t>(PerfStats::Kind::Draw)]
+               .calls.load() == 0);
+    assert(PerfStats::Data()
+               .timings[static_cast<size_t>(PerfStats::Kind::BufferSync)]
+               .calls.load() == 0);
+#endif
     assert(PerfStats::Data().flips.load() == 4000);
     auto &work = PerfStats::Data()
                      .timings[static_cast<size_t>(PerfStats::Kind::GpuWork)];

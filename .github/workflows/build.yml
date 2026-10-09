@@ -1,4 +1,4 @@
-name: Build KytyPS5 performance diagnostics
+name: Build KytyPS5 renderer A-B experiments
 
 on:
   workflow_dispatch:
@@ -32,9 +32,13 @@ jobs:
           echo "value=KytyPS5-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   windows:
-    name: Build KytyPS5 (Windows)
+    name: Build KytyPS5 (Windows, dirty query ${{ matrix.fastpath }})
     needs: metadata
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        fastpath: [0, 1]
 
     steps:
       - name: Checkout repository
@@ -102,6 +106,7 @@ jobs:
             -G Ninja ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON ^
+            -DCMAKE_CXX_FLAGS=-DKYTY_DIRTY_RANGE_FASTPATH=${{ matrix.fastpath }} ^
             -DKYTY_BUILD_ORIGIN=%KYTY_BUILD_ORIGIN% ^
             -DKYTY_BUILD_REPOSITORY=%KYTY_BUILD_REPOSITORY% ^
             -DKYTY_RELEASE_TAG=${{ needs.metadata.outputs.release_tag }} ^
@@ -127,21 +132,31 @@ jobs:
             audio_out2_port_tests pad_haptics_tests controller_settings_tests ime_dialog_tests lru_cache_tests virtual_memory_allocation_tests ^
             shader_recompiler_compute_tests ^
             resource_tracking_tests scalar_provenance_tests ^
-            resource_materialization_tests shader_vertex_metadata_tests archive_file_tests avplayer_file_tests --parallel
+            resource_materialization_tests shader_vertex_metadata_tests archive_file_tests avplayer_file_tests ^
+            bit_array_tests memory_tracker_tests --parallel
 
       - name: Test
         shell: cmd
         run: |
-          ctest --test-dir _Build/windows --output-on-failure -R "^(audio_out2_port|pad_haptics|controller_settings|ime_dialog|lru_cache|resource_tracking|scalar_provenance|resource_materialization|shader_vertex_metadata|archive_file|avplayer_file|virtual_memory_allocation)$"
+          ctest --test-dir _Build/windows --output-on-failure -R "^(audio_out2_port|pad_haptics|controller_settings|ime_dialog|lru_cache|resource_tracking|scalar_provenance|resource_materialization|shader_vertex_metadata|archive_file|avplayer_file|virtual_memory_allocation|bit_array|memory_tracker)$"
 
       - name: Install
         shell: cmd
         run: |
           cmake --install _Build/windows --prefix _Build/windows/install
 
+      - name: Record experiment variant and clean-upload benchmark
+        shell: pwsh
+        run: |
+          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false } |
+            ConvertTo-Json | Set-Content _Build/windows/install/experiment.json
+          & ./_Build/windows/memory_tracker_tests.exe --benchmark-clean-upload |
+            Tee-Object -FilePath _Build/windows/install/clean-upload-benchmark.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
+          name: KytyPS5-Windows-x64-dirty-${{ matrix.fastpath }}
           path: _Build/windows/install/**
           if-no-files-found: error

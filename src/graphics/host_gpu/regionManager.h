@@ -9,6 +9,11 @@
 #include <mutex>
 #include <utility>
 
+// Experimental bounded dirty-bit query; the reference implementation remains the default.
+#ifndef KYTY_DIRTY_RANGE_FASTPATH
+#define KYTY_DIRTY_RANGE_FASTPATH 0
+#endif
+
 #if defined(_MSC_VER)
 #include <intrin.h>
 #elif defined(__x86_64__)
@@ -95,7 +100,7 @@ public:
 	template <DirtySource source>
 	[[nodiscard]] bool IsModified(uint64_t offset, uint64_t size) const {
 		const auto [start, end] = GetPageRange(m_cpu_addr + offset, size);
-		return GetBits<source>().FirstRangeFrom(start).first < end;
+		return AnyModifiedInRange(GetBits<source>(), start, end);
 	}
 
 	template <DirtySource source, bool enable>
@@ -128,7 +133,7 @@ public:
 	void ForEachModifiedRange(uint64_t vaddr, uint64_t size, Func&& func) {
 		const auto [start, end] = GetPageRange(vaddr, size);
 		auto&      bits         = GetBits<source>();
-		if (bits.FirstRangeFrom(start).first >= end) {
+		if (!AnyModifiedInRange(bits, start, end)) {
 			return;
 		}
 		RegionBits mask(bits, start, end);
@@ -148,6 +153,14 @@ public:
 	TrackingSpinLock lock;
 
 private:
+	[[nodiscard]] static bool AnyModifiedInRange(const RegionBits& bits, size_t start, size_t end) {
+#if KYTY_DIRTY_RANGE_FASTPATH
+		return bits.AnyInRange(start, end);
+#else
+		return bits.FirstRangeFrom(start).first < end;
+#endif
+	}
+
 	template <bool track, bool is_read>
 	void UpdateProtection() {
 		const auto protection = is_read ? ~m_gpu_dirty : m_cpu_dirty;

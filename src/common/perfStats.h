@@ -9,6 +9,10 @@
 #include <mutex>
 #include <thread>
 
+#ifndef KYTY_PERF_DETAIL
+#define KYTY_PERF_DETAIL 0
+#endif
+
 // Diagnostic wall-clock timings, not hardware GPU utilization. Nested scopes overlap.
 namespace PerfStats {
 using Clock = std::chrono::steady_clock;
@@ -45,22 +49,32 @@ inline Counters& Data() {
 }
 class Scope {
 public:
-	explicit Scope(Kind kind)
-	    : m_counter(Data().timings[static_cast<size_t>(kind)]), m_start(Clock::now()) {
-		m_counter.active.fetch_add(1, std::memory_order_relaxed);
+	explicit Scope(Kind kind): m_counter(nullptr) {
+		// Remove high-frequency diagnostic clocks/atomics from normal comparisons.
+		if constexpr (!KYTY_PERF_DETAIL) {
+			if (kind > Kind::HostWait) {
+				return;
+			}
+		}
+		m_counter = &Data().timings[static_cast<size_t>(kind)];
+		m_start   = Clock::now();
+		m_counter->active.fetch_add(1, std::memory_order_relaxed);
 	}
 	~Scope() {
+		if (m_counter == nullptr) {
+			return;
+		}
 		const auto ns =
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - m_start).count();
-		m_counter.ns.fetch_add(static_cast<uint64_t>(ns), std::memory_order_relaxed);
-		m_counter.calls.fetch_add(1, std::memory_order_relaxed);
-		m_counter.active.fetch_sub(1, std::memory_order_relaxed);
+		m_counter->ns.fetch_add(static_cast<uint64_t>(ns), std::memory_order_relaxed);
+		m_counter->calls.fetch_add(1, std::memory_order_relaxed);
+		m_counter->active.fetch_sub(1, std::memory_order_relaxed);
 	}
 	Scope(const Scope&)            = delete;
 	Scope& operator=(const Scope&) = delete;
 
 private:
-	Counter&          m_counter;
+	Counter*          m_counter;
 	Clock::time_point m_start;
 };
 inline void Flip() {
@@ -77,7 +91,10 @@ public:
 #else
 		m_file = std::fopen("_perf-detail.txt", "a");
 #endif
-		Write("[perf] session start DETAIL-v2; completed-scope wall times in ms; nested/thread "
+		Write(KYTY_PERF_DETAIL ? "[perf] session start DETAIL-v3; "
+		                       : "[perf] session start LITE-v3; "
+		                         "fine-grained timers disabled; ");
+		Write("completed-scope wall times in ms; nested/thread "
 		      "timings "
 		      "overlap; "
 		      "active scopes are unfinished; fps counts guest flip groups, not repeated display "
