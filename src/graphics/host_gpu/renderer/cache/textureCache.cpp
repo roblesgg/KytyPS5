@@ -1,5 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 
+#include "common/perfStats.h"
+
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -1263,6 +1265,7 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 }
 
 ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
+	PerfStats::Scope perf_detail(PerfStats::Kind::TextureLookup);
 	auto& command = m_scheduler.Current();
 	if (command.IsInvalid()) {
 		EXIT("TextureCache: image lookup requires a valid command buffer\n");

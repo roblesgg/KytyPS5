@@ -1,5 +1,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
+#include "common/perfStats.h"
+
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -136,6 +138,7 @@ void RenderContext::PrepareBda() {
 }
 
 void RenderContext::RunGarbageCollector() {
+	PerfStats::Scope perf_detail(PerfStats::Kind::Maintenance);
 	if (m_fault_process_pending) {
 		m_fault_process_pending = false;
 		m_buffer_cache.ProcessFaultBuffer();

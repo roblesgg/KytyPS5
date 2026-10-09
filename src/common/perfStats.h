@@ -12,7 +12,23 @@
 // Diagnostic wall-clock timings, not hardware GPU utilization. Nested scopes overlap.
 namespace PerfStats {
 using Clock = std::chrono::steady_clock;
-enum class Kind : size_t { GpuWork, GpuIdle, Shader, Pipeline, HostWait, Count };
+enum class Kind : size_t {
+	GpuWork,
+	GpuIdle,
+	Shader,
+	Pipeline,
+	HostWait,
+	Draw,
+	Compute,
+	Bindings,
+	ShaderLookup,
+	PipelineLookup,
+	BufferSync,
+	BufferRead,
+	TextureLookup,
+	Maintenance,
+	Count
+};
 inline constexpr size_t KindCount = static_cast<size_t>(Kind::Count);
 struct Counter {
 	std::atomic<uint64_t> ns {0};
@@ -57,16 +73,18 @@ public:
 	Session() {
 		(void)Data();
 #ifdef _WIN32
-		(void)fopen_s(&m_file, "C:/KYTY/_perf.txt", "a");
+		(void)fopen_s(&m_file, "C:/KYTY/_perf-detail.txt", "a");
 #else
-		m_file = std::fopen("_perf.txt", "a");
+		m_file = std::fopen("_perf-detail.txt", "a");
 #endif
-		Write("[perf] session start; completed-scope wall times in ms; nested/thread timings "
+		Write("[perf] session start DETAIL-v2; completed-scope wall times in ms; nested/thread "
+		      "timings "
 		      "overlap; "
 		      "active scopes are unfinished; fps counts guest flip groups, not repeated display "
 		      "frames\n");
 		if (m_file == nullptr) {
-			std::fputs("[perf] WARNING: cannot open _perf.txt; using console only\n", stderr);
+			std::fputs("[perf] WARNING: cannot open _perf-detail.txt; using console only\n",
+			           stderr);
 		}
 		m_start = m_previous = Clock::now();
 		m_thread             = std::jthread([this](std::stop_token token) {
@@ -115,8 +133,10 @@ private:
 		              static_cast<unsigned long long>(flips - m_flips),
 		              static_cast<unsigned long long>(flips));
 		Write(line);
-		constexpr std::array<const char*, KindCount> names {"gpu_work", "gpu_idle", "shader",
-		                                                    "pipeline", "host_wait"};
+		constexpr std::array<const char*, KindCount> names {
+		    "gpu_work",    "gpu_idle",    "shader",         "pipeline",      "host_wait",
+		    "draw",        "compute",     "bindings",       "shader_lookup", "pipeline_lookup",
+		    "buffer_sync", "buffer_read", "texture_lookup", "maintenance"};
 		for (size_t i = 0; i < KindCount; ++i) {
 			auto&      counter = Data().timings[i];
 			const auto ns      = counter.ns.load(std::memory_order_relaxed);

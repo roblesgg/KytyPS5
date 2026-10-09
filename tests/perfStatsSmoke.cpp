@@ -35,9 +35,9 @@ int main() {
   // period.
   assert(PerfStats::Clock::now() - start < std::chrono::seconds(9));
 #ifdef _WIN32
-  std::ifstream file("C:/KYTY/_perf.txt");
+  std::ifstream file("C:/KYTY/_perf-detail.txt");
 #else
-  std::ifstream file("_perf.txt");
+  std::ifstream file("_perf-detail.txt");
 #endif
   assert(file.good());
   const std::string contents((std::istreambuf_iterator<char>(file)),
