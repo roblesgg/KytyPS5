@@ -1,4 +1,3 @@
-#include "common/perfStats.h"
 #include "graphics/presentation/videoOut.h"
 
 #include "common/abi.h"
@@ -6,6 +5,7 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
+#include "common/perfStats.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -26,6 +26,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fmt/format.h>
 #include <list>
 #include <thread>
@@ -67,6 +70,33 @@ constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED     = 0;
 constexpr int      VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED       = 1;
 constexpr uint64_t VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_STRICT_COLORIMETRY = 8;
 constexpr uint64_t VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_ALPHA_PREMULTIPLIED = 32;
+
+namespace {
+
+constexpr uint32_t OutputStatusResolution(int32_t attribute3, uint32_t width, uint32_t height,
+                                          bool force_1080) {
+	return force_1080 ? 1u : ((attribute3 & 4) != 0 && width < 3840 && height < 2160 ? 1u : 2u);
+}
+
+static_assert(OutputStatusResolution(0, 1920, 1080, false) == 2);
+static_assert(OutputStatusResolution(4, 1920, 1080, false) == 1);
+static_assert(OutputStatusResolution(4, 3840, 1080, false) == 2);
+static_assert(OutputStatusResolution(4, 1920, 2160, false) == 2);
+static_assert(OutputStatusResolution(4, 3840, 2160, false) == 2);
+static_assert(OutputStatusResolution(0, 3840, 2160, true) == 1);
+static_assert(OutputStatusResolution(4, 3840, 2160, true) == 1);
+
+bool ProbeOutput1080Enabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_PROBE_OUTPUT_1080");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return enabled;
+}
+
+constexpr uint32_t VIDEO_OUT_PROBE_LOG_LIMIT = 64;
+
+} // namespace
 
 enum class VideoOutEventKind : uintptr_t {
 	Flip           = VIDEO_OUT_EVENT_FLIP,
@@ -178,6 +208,12 @@ struct BufferAttributeGroup {
 	[[nodiscard]] Graphics::ImageInfo ImageInfo(const VideoOutBuffer& buffer) const;
 };
 
+struct VideoOutSurfaceProbe {
+	uint64_t                 generation = 0;
+	VideoOutBufferAttribute2 attribute {};
+	int                      category = VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED;
+};
+
 struct VideoOutConfig {
 	Common::Mutex                       mutex;
 	Common::CondVar                     vblank_cond;
@@ -198,7 +234,41 @@ struct VideoOutConfig {
 	VideoOutVblankStatus                vblank_status;
 	std::array<VideoOutBuffer, VIDEO_OUT_BUFFER_NUM_MAX>                 buffers;
 	std::array<BufferAttributeGroup, VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX> groups;
+	// Diagnostic snapshots are protected by the existing port mutex. No per-frame logging.
+	uint64_t output_probe_generation   = 0;
+	uint32_t output_probe_resolution   = 0;
+	uint64_t output_probe_refresh_rate = 0;
+	uint32_t output_probe_log_count    = 0;
+	uint32_t surface_probe_log_count   = 0;
+	std::array<VideoOutSurfaceProbe, VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX> surface_probes;
 };
+
+static void ProbeRegisteredSurface(VideoOutConfig& ctx, int handle, int set_index,
+                                   const VideoOutBufferAttribute2& attribute, int category,
+                                   const char* action) {
+	auto&       probe    = ctx.surface_probes[set_index];
+	const auto& previous = probe.attribute;
+	const bool  changed =
+	    probe.generation != ctx.generation || previous.width != attribute.width ||
+	    previous.height != attribute.height || previous.aspect_ratio != attribute.aspect_ratio ||
+	    previous.pitch_in_pixel != attribute.pitch_in_pixel ||
+	    previous.pixel_format != attribute.pixel_format ||
+	    previous.tiling_mode != attribute.tiling_mode ||
+	    previous.dcc_control != attribute.dcc_control || probe.category != category;
+	probe.generation = ctx.generation;
+	probe.attribute  = attribute;
+	probe.category   = category;
+	if (changed && ctx.surface_probe_log_count < VIDEO_OUT_PROBE_LOG_LIMIT) {
+		++ctx.surface_probe_log_count;
+		std::fprintf(stderr,
+		             "[output-probe] %s handle=%d generation=%" PRIu64
+		             " group=%d registered_surface=%ux%u aspect=%u pitch=%u"
+		             " format=0x%016" PRIx64 " tiling=%u dcc=0x%08" PRIx32 " category=%d\n",
+		             action, handle, ctx.generation, set_index, attribute.width, attribute.height,
+		             attribute.aspect_ratio, attribute.pitch_in_pixel, attribute.pixel_format,
+		             attribute.tiling_mode, attribute.dcc_control, category);
+	}
+}
 
 class FlipQueue {
 public:
@@ -1509,6 +1579,7 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 		     buffer_index_start + i, buffer.data_address, buffer.metadata_address,
 		     attribute->dcc_control);
 	}
+	ProbeRegisteredSurface(*ctx, handle, set_index, *attribute, category, "register");
 
 	return OK;
 }
@@ -1551,6 +1622,7 @@ KYTY_SYSV_ABI int VideoOutSubmitChangeBufferAttribute2(int handle, int set_index
 		}
 	}
 	ctx->groups[set_index] = replacement;
+	ProbeRegisteredSurface(*ctx, handle, set_index, *attribute, replacement.category, "change");
 
 	return OK;
 }
@@ -1800,17 +1872,33 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	Loader::SystemContentParamSfoGetInt("ATTRIBUTE3", &attribute3);
 	ctx->mutex.Lock();
 	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
-	status->resolution =
-	    ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160 ? 1u : 2u);
-	status->dynamicRange = 1;
+	// The experiment changes only the advertised mode; surface geometry remains guest-owned.
+	const bool force_1080 = ProbeOutput1080Enabled();
+	status->resolution    = OutputStatusResolution(attribute3, ctx->width, ctx->height, force_1080);
+	status->dynamicRange  = 1;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
 	         ? VIDEO_OUT_REFRESH_RATE_119_88HZ
 	         : VIDEO_OUT_REFRESH_RATE_59_94HZ);
-	status->flags       = 0;
-	status->reserved[0] = 0;
-	status->reserved[1] = 0;
-	status->reserved[2] = 0;
+	status->flags                  = 0;
+	status->reserved[0]            = 0;
+	status->reserved[1]            = 0;
+	status->reserved[2]            = 0;
+	const bool changed             = ctx->output_probe_generation != ctx->generation ||
+	                                 ctx->output_probe_resolution != status->resolution ||
+	                                 ctx->output_probe_refresh_rate != status->refreshRate;
+	ctx->output_probe_generation   = ctx->generation;
+	ctx->output_probe_resolution   = status->resolution;
+	ctx->output_probe_refresh_rate = status->refreshRate;
+	if (changed && ctx->output_probe_log_count < VIDEO_OUT_PROBE_LOG_LIMIT) {
+		++ctx->output_probe_log_count;
+		std::fprintf(stderr,
+		             "[output-probe] query handle=%d generation=%" PRIu64 " attribute3=0x%08" PRIx32
+		             " configured_window=%ux%u"
+		             " returned_resolution=%u refresh_rate=%" PRIu64 " forced_1080=%u\n",
+		             handle, ctx->generation, static_cast<uint32_t>(attribute3), ctx->width,
+		             ctx->height, status->resolution, status->refreshRate, force_1080 ? 1u : 0u);
+	}
 	ctx->mutex.Unlock();
 
 	return OK;

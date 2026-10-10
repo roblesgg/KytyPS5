@@ -1,9 +1,9 @@
-name: Build KytyPS5 renderer A-B experiments
+name: Build KytyPS5 stable resource and output probes
 
 on:
   workflow_dispatch:
   push:
-    branches: [ perf-stats ]
+    branches: [ perf-stable-probes ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -32,13 +32,13 @@ jobs:
           echo "value=KytyPS5-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   windows:
-    name: Build KytyPS5 (Windows, dirty query ${{ matrix.fastpath }})
+    name: Build KytyPS5 (Windows, probes on visually verified renderer)
     needs: metadata
     runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        fastpath: [0, 1]
+        fastpath: [0]
 
     steps:
       - name: Checkout repository
@@ -122,8 +122,12 @@ jobs:
           New-Item -ItemType Directory -Path C:/KYTY -Force | Out-Null
           clang-cl /std:c++20 /W4 /WX /EHsc /I src tests/perfStatsSmoke.cpp /Fe:_Build/perf_smoke.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:KYTY_RESOURCE_PROBE = '1'
           & ./_Build/perf_smoke.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -LiteralPath C:/KYTY/_perf-detail.txt -SimpleMatch '[resource-probe]' -Quiet)) {
+            throw 'Resource probe reporter did not emit its diagnostic line.'
+          }
 
       - name: Build
         shell: cmd
@@ -131,32 +135,41 @@ jobs:
           cmake --build _Build/windows --target launcher ^
             audio_out2_port_tests pad_haptics_tests controller_settings_tests ime_dialog_tests lru_cache_tests virtual_memory_allocation_tests ^
             shader_recompiler_compute_tests ^
-            resource_tracking_tests scalar_provenance_tests ^
+            resource_tracking_tests scalar_provenance_tests shader_cfg_tests ^
             resource_materialization_tests shader_vertex_metadata_tests archive_file_tests avplayer_file_tests ^
             bit_array_tests memory_tracker_tests --parallel
 
       - name: Test
         shell: cmd
         run: |
-          ctest --test-dir _Build/windows --output-on-failure -R "^(audio_out2_port|pad_haptics|controller_settings|ime_dialog|lru_cache|resource_tracking|scalar_provenance|resource_materialization|shader_vertex_metadata|archive_file|avplayer_file|virtual_memory_allocation|bit_array|memory_tracker)$"
+          ctest --test-dir _Build/windows --output-on-failure -R "^(audio_out2_port|pad_haptics|controller_settings|ime_dialog|lru_cache|resource_tracking|scalar_provenance|shader_cfg|resource_materialization|shader_vertex_metadata|archive_file|avplayer_file|virtual_memory_allocation|bit_array|memory_tracker)$"
+
+      - name: Test resource semantics with probes enabled
+        shell: cmd
+        env:
+          KYTY_RESOURCE_PROBE: '1'
+        run: |
+          ctest --test-dir _Build/windows --output-on-failure -R "^(resource_tracking|resource_materialization)$"
 
       - name: Install
         shell: cmd
         run: |
           cmake --install _Build/windows --prefix _Build/windows/install
 
-      - name: Record experiment variant and clean-upload benchmark
+      - name: Record experiment variant and preserve matching symbols
         shell: pwsh
         run: |
-          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false } |
+          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; reference_commit = '8509b02d787829cc801cca22256adc2af196df36'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false; resource_probe_available = $true; output_1080_probe_available = $true } |
             ConvertTo-Json | Set-Content _Build/windows/install/experiment.json
-          & ./_Build/windows/memory_tracker_tests.exe --benchmark-clean-upload |
-            Tee-Object -FilePath _Build/windows/install/clean-upload-benchmark.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path _Build/windows/install/debug -Force | Out-Null
+          Copy-Item -LiteralPath _Build/windows/kyty_emulator.pdb -Destination _Build/windows/install/debug -ErrorAction Stop
+          $maps = @(Get-ChildItem -Path _Build/windows/kyty_emulator_*.map -File)
+          if ($maps.Count -ne 1) { throw 'Expected exactly one emulator linker map.' }
+          Copy-Item -LiteralPath $maps[0].FullName -Destination _Build/windows/install/debug -ErrorAction Stop
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Windows-x64-dirty-${{ matrix.fastpath }}
+          name: KytyPS5-Windows-x64-stable-probes
           path: _Build/windows/install/**
           if-no-files-found: error
