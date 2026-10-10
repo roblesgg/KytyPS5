@@ -199,6 +199,17 @@ private:
 			              static_cast<unsigned long long>(resource.max_words));
 			Write(line);
 			m_resource = resource;
+			const auto bda = ResourceProbe::SnapshotBda();
+			std::snprintf(
+			    line, sizeof(line),
+			    "[bda-probe] t=%.1fs window=%.3fs bda_calls=%llu bda_mapped_ranges=%llu"
+			    " bda_entries_visited=%llu\n",
+			    std::chrono::duration<double>(now - m_start).count(), seconds,
+			    static_cast<unsigned long long>(bda.bda_calls - m_bda.bda_calls),
+			    static_cast<unsigned long long>(bda.bda_mapped_ranges - m_bda.bda_mapped_ranges),
+			    static_cast<unsigned long long>(bda.bda_entries_visited - m_bda.bda_entries_visited));
+			Write(line);
+			m_bda = bda;
 		}
 		m_flips    = flips;
 		m_previous = now;
@@ -210,6 +221,7 @@ private:
 	std::array<uint64_t, KindCount> m_calls {};
 	uint64_t                        m_flips = 0;
 	ResourceProbe::Totals           m_resource {};
+	ResourceProbe::BdaTotals        m_bda {};
 	std::jthread                    m_thread;
 };
 } // namespace PerfStats

@@ -4,6 +4,8 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/profiler.h"
+#include "common/resourceProbe.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
@@ -126,15 +128,22 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 }
 
 void RenderContext::PrepareBda() {
+	KYTY_PROFILER_FUNCTION();
+	ResourceProbe::BdaTotals probe {};
+	const bool              probe_enabled = ResourceProbe::Enabled();
+	auto*                   visits = probe_enabled ? &probe.bda_entries_visited : nullptr;
+	if (probe_enabled) probe.bda_calls = 1;
 	if (!m_bda_logged) {
 		Log::WriteToConsoleAndLog("GPU: using buffer device address (BDA) shader memory access.\n");
 		m_bda_logged = true;
 	}
 	std::shared_lock lock(m_mapped_ranges_mutex);
-	m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
-		m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
+	m_mapped_ranges.ForEach([this, &probe, visits](uint64_t start, uint64_t end) {
+		if (visits != nullptr) ++probe.bda_mapped_ranges;
+		m_buffer_cache.SynchronizeBuffersInRange(start, end - start, visits);
 	});
 	m_fault_process_pending = true;
+	if (probe_enabled) ResourceProbe::SubmitBda(probe);
 }
 
 void RenderContext::RunGarbageCollector() {

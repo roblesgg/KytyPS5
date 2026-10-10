@@ -276,6 +276,7 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 }
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
+	KYTY_PROFILER_FUNCTION();
 	PerfStats::Scope perf_detail(PerfStats::Kind::BufferRead);
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
@@ -677,13 +678,15 @@ void BufferCache::ProcessFaultBuffer() {
 	m_fault_manager.ProcessFaultBuffer();
 }
 
-void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size) {
+void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size,
+                                            uint64_t* entries_visited) {
 	const auto end = vaddr + size;
 	auto       it  = m_buffers.upper_bound(vaddr);
 	if (it != m_buffers.begin()) {
 		--it;
 	}
 	for (; it != m_buffers.end() && it->first < end; ++it) {
+		if (entries_visited != nullptr) ++*entries_visited;
 		auto&      buffer = m_slot_buffers[it->second];
 		const auto start  = std::max(buffer.CpuAddress(), vaddr);
 		const auto finish = std::min(buffer.CpuAddress() + buffer.Size(), end);

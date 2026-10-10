@@ -80,7 +80,9 @@ public:
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
-	void               SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size);
+	// Optional observer counts loop entries, including a predecessor that does not intersect.
+	void SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size,
+	                              uint64_t* entries_visited = nullptr);
 	void               RunGarbageCollector();
 
 private:

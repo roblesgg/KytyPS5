@@ -937,6 +937,7 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
                                              std::span<RenderColorInfo> colors) {
+	KYTY_PROFILER_FUNCTION();
 	PerfStats::Scope perf_detail(PerfStats::Kind::Bindings);
 	bool uses_dma = false;
 	FindBuffers(stages);

@@ -283,6 +283,7 @@ struct PipelineCache::ProgramCache {
 	template <typename InputInfo>
 	ShaderProgram Get(const ShaderParams& params, InputInfo& input_info,
 	                  uint32_t& push_data_cursor) {
+		KYTY_PROFILER_FUNCTION();
 	PerfStats::Scope perf_detail(PerfStats::Kind::ShaderLookup);
 		ShaderType stage;
 		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {

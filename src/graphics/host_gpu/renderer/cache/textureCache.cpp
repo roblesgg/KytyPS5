@@ -1136,6 +1136,7 @@ void TextureCache::InitializeImage(ImageId id) {
 
 void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
                                        uint32_t metadata_base_layer) {
+	KYTY_PROFILER_FUNCTION();
 	if (desc.info.metadata.kind != ImageMetadataKind::Dcc &&
 	    desc.info.metadata.kind != ImageMetadataKind::Cmask) {
 		return;
