@@ -147,6 +147,8 @@ void RenderContext::PrepareBda() {
 }
 
 void RenderContext::RunGarbageCollector() {
+	KYTY_PROFILER_FUNCTION();
+	ResourceProbe::RecordGcRun();
 	PerfStats::Scope perf_detail(PerfStats::Kind::Maintenance);
 	if (m_fault_process_pending) {
 		m_fault_process_pending = false;

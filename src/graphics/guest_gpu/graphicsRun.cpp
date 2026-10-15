@@ -5,6 +5,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/resourceProbe.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
@@ -177,6 +178,7 @@ void GuestGpu::SuspendPoint() {
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
+	ResourceProbe::RecordSuspendPointEnqueued();
 	m_done_num++;
 }
 
@@ -628,6 +630,7 @@ bool GuestGpu::Process(Submission& submission) {
 			cp.PrepareCpuFlip(submission.flip_request_id);
 			break;
 		case SubmissionType::SuspendPoint:
+			ResourceProbe::RecordSuspendPointProcessed();
 			cp.EmitGlobalBarrier();
 			m_renderer.GetCommandScheduler().DeferPriorityOperation(
 			    [ready = m_suspend_point_ready] { ready->release(); });

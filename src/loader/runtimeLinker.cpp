@@ -8,6 +8,7 @@
 #include "common/logging/log.h"
 #include "common/platform/sysDbg.h"
 #include "common/profiler.h"
+#include "common/resourceProbe.h"
 #include "common/singleton.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -115,6 +116,8 @@ struct RelocationInfo {
 	std::string name;
 	std::string dbg_name;
 	bool        bind_self = false;
+	bool        probe_enabled = false;
+	ImportResolutionProbe probe;
 };
 
 struct StubbedImportRecord {
@@ -845,7 +848,9 @@ static RelocationInfo GetRelocationInfo(Elf64_Rela* r, Program* program) {
 				case STB_WEAK: {
 					ret.bind = (ret.bind == BindType::Unknown ? BindType::Weak : ret.bind);
 					ret.name = names + sym.st_name;
-					program->rt->Resolve(ret.name, ret.type, program, &sr, &ret.bind_self);
+					ret.probe_enabled = ResourceProbe::Enabled() && ret.name.starts_with("h9z6+0hEydk#");
+					program->rt->Resolve(ret.name, ret.type, program, &sr, &ret.bind_self,
+					                     ret.probe_enabled ? &ret.probe : nullptr);
 					symbol_vaddr = sr.vaddr;
 				} break;
 				default: EXIT("unknown bind: %d\n", (int)bind);
@@ -895,6 +900,28 @@ static bool RelocateRecord(uint32_t index, Elf64_Rela* r, Program* program, bool
 	}
 
 	const bool patched = PatchGuestMemory64(ri.vaddr, value);
+	if (patched && ri.probe_enabled) {
+		// One line per actual slot change, capped for the process. This is not a call count.
+		static std::atomic<uint32_t> probe_events {0};
+		const auto event = probe_events.fetch_add(1, std::memory_order_relaxed);
+		if (event < 16) {
+			const auto* owner = ri.probe.guest_owner;
+			const auto owner_name = owner == nullptr ? std::string {} :
+			    Common::PathToGenericString(owner->file_name);
+			std::fprintf(stdout,
+			    "[agc-resolution-probe] event=%u importer=%s slot=0x%016" PRIx64
+			    " slot_offset=0x%" PRIx64 " target=0x%016" PRIx64
+			    " route=%s resolved=%u stubbed=%u owner=%s owner_offset=0x%" PRIx64
+			    " symbol=%s dbg=%s\n",
+			    event + 1, Common::PathToGenericString(program->file_name).c_str(), ri.vaddr,
+			    ri.vaddr - program->base_vaddr, value,
+			    ri.resolved ? ri.probe.route : "unresolved-stub",
+			    static_cast<unsigned>(ri.resolved), static_cast<unsigned>(stubbed),
+			    owner_name.c_str(), owner == nullptr ? uint64_t {0} : value - owner->base_vaddr,
+			    ri.name.c_str(), ri.dbg_name.c_str());
+			std::fflush(stdout);
+		}
+	}
 	if (patched && stubbed) {
 		LOGF("Relocate: unresolved %s import patched to stub [%u] [%016" PRIx64 "] <- %016" PRIx64
 		     ", %s, %s, %s, %s\n",
@@ -1325,12 +1352,13 @@ void RuntimeLinker::Clear() {
 }
 
 void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* program,
-                            SymbolRecord* out_info, bool* bind_self) {
+                            SymbolRecord* out_info, bool* bind_self, ImportResolutionProbe* probe) {
 	KYTY_PROFILER_FUNCTION();
 
 	Common::LockGuard lock(m_mutex);
 
 	EXIT_IF(out_info == nullptr);
+	if (probe != nullptr) *probe = {};
 
 	auto ids = Common::Split(name, '#');
 
@@ -1342,11 +1370,12 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 		const LibraryId* l = FindLibrary(*program, ids.at(1));
 		const ModuleId*  m = FindModule(*program, ids.at(2));
 
-		auto resolve_by_nid = [this, type](const std::string& nid, SymbolRecord* out) -> bool {
+		auto resolve_by_nid = [this, type, probe](const std::string& nid, SymbolRecord* out) -> bool {
 			EXIT_IF(out == nullptr);
 
 			if (m_symbols != nullptr) {
 				if (const auto* rec = m_symbols->FindByNid(nid, type); rec != nullptr) {
+					if (probe != nullptr) probe->route = "hle-nid-fallback";
 					*out = *rec;
 					return true;
 				}
@@ -1355,6 +1384,10 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 			for (auto* p: m_programs) {
 				if (p != nullptr && p->export_symbols != nullptr) {
 					if (const auto* rec = p->export_symbols->FindByNid(nid, type); rec != nullptr) {
+						if (probe != nullptr) {
+							probe->route = "guest-nid-fallback";
+							probe->guest_owner = p;
+						}
 						*out = *rec;
 						return true;
 					}
@@ -1378,6 +1411,7 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 
 			if (m_symbols != nullptr) {
 				rec = m_symbols->Find(sr);
+				if (rec != nullptr && probe != nullptr) probe->route = "hle-exact";
 			}
 
 			if (rec == nullptr) {
@@ -1391,6 +1425,10 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 					}
 					rec = p->export_symbols->Find(sr);
 					if (rec != nullptr) {
+						if (probe != nullptr) {
+							probe->route = "guest-exact";
+							probe->guest_owner = p;
+						}
 						if (bind_self != nullptr) {
 							*bind_self = (p == program);
 						}

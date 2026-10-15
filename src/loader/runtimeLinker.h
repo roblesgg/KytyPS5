@@ -132,6 +132,12 @@ struct Program {
 	uint64_t                        proc_param_vaddr            = 0;
 };
 
+// Resolution provenance for an opt-in loader diagnostic only; never redirects a symbol.
+struct ImportResolutionProbe {
+	const char*    route       = "unresolved";
+	const Program* guest_owner = nullptr;
+};
+
 class RuntimeLinker {
 public:
 	RuntimeLinker();
@@ -163,7 +169,7 @@ public:
 	void* ApplicationHeapMemalign(uint64_t alignment, uint64_t size);
 
 	void Resolve(const std::string& name, SymbolType type, Program* program, SymbolRecord* out_info,
-	             bool* bind_self);
+	             bool* bind_self, ImportResolutionProbe* probe = nullptr);
 
 	SymbolDatabase* Symbols() { return m_symbols.get(); }
 

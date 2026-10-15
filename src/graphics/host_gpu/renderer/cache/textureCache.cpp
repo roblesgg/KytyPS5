@@ -1994,6 +1994,7 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 }
 
 void TextureCache::RunGarbageCollector() {
+	KYTY_PROFILER_FUNCTION();
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
@@ -2054,6 +2055,7 @@ void TextureCache::RunGarbageCollector() {
 }
 
 void TextureCache::ProcessDownloadImages() {
+	KYTY_PROFILER_FUNCTION();
 	std::scoped_lock lock {m_lock};
 	for (const auto id: m_download_images) {
 		const auto owner = m_slot_images.try_get(id);

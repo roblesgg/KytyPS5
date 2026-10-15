@@ -221,19 +221,33 @@ private:
 			                                              m_srt.srt_interpreted_attempts));
 			Write(line);
 			m_srt = srt;
+			const auto maintenance = ResourceProbe::SnapshotMaintenance();
+			std::snprintf(
+			    line, sizeof(line),
+			    "[maintenance-probe] t=%.1fs window=%.3fs gc_runs=%llu"
+			    " suspend_points_enqueued=%llu suspend_points_processed=%llu\n",
+			    std::chrono::duration<double>(now - m_start).count(), seconds,
+			    static_cast<unsigned long long>(maintenance.gc_runs - m_maintenance.gc_runs),
+			    static_cast<unsigned long long>(maintenance.suspend_points_enqueued -
+			                                    m_maintenance.suspend_points_enqueued),
+			    static_cast<unsigned long long>(maintenance.suspend_points_processed -
+			                                    m_maintenance.suspend_points_processed));
+			Write(line);
+			m_maintenance = maintenance;
 		}
 		m_flips    = flips;
 		m_previous = now;
 	}
-	FILE*                           m_file = nullptr;
-	Clock::time_point               m_start;
-	Clock::time_point               m_previous;
-	std::array<uint64_t, KindCount> m_ns {};
-	std::array<uint64_t, KindCount> m_calls {};
-	uint64_t                        m_flips = 0;
-	ResourceProbe::Totals           m_resource {};
-	ResourceProbe::BdaTotals        m_bda {};
-	ResourceProbe::SrtTotals        m_srt {};
-	std::jthread                    m_thread;
+	FILE*                            m_file = nullptr;
+	Clock::time_point                m_start;
+	Clock::time_point                m_previous;
+	std::array<uint64_t, KindCount>   m_ns {};
+	std::array<uint64_t, KindCount>   m_calls {};
+	uint64_t                         m_flips = 0;
+	ResourceProbe::Totals            m_resource {};
+	ResourceProbe::BdaTotals         m_bda {};
+	ResourceProbe::SrtTotals         m_srt {};
+	ResourceProbe::MaintenanceTotals m_maintenance {};
+	std::jthread                     m_thread;
 };
 } // namespace PerfStats

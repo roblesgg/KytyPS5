@@ -122,6 +122,9 @@ jobs:
           New-Item -ItemType Directory -Path C:/KYTY -Force | Out-Null
           clang-cl /std:c++20 /W4 /WX /EHsc /I src tests/perfStatsSmoke.cpp /Fe:_Build/perf_smoke.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath C:/KYTY/_perf-detail.txt) {
+            Remove-Item -LiteralPath C:/KYTY/_perf-detail.txt -Force -ErrorAction Stop
+          }
           $env:KYTY_RESOURCE_PROBE = '1'
           & ./_Build/perf_smoke.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -130,6 +133,16 @@ jobs:
           }
           if (-not (Select-String -LiteralPath C:/KYTY/_perf-detail.txt -SimpleMatch '[srt-probe]' -Quiet)) {
             throw 'SRT probe reporter did not emit its diagnostic line.'
+          }
+          if (-not (Select-String -LiteralPath C:/KYTY/_perf-detail.txt -SimpleMatch '[maintenance-probe]' -Quiet)) {
+            throw 'Maintenance reporter did not emit its diagnostic line.'
+          }
+          Remove-Item -LiteralPath C:/KYTY/_perf-detail.txt -Force -ErrorAction Stop
+          $env:KYTY_RESOURCE_PROBE = '0'
+          & ./_Build/perf_smoke.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Select-String -LiteralPath C:/KYTY/_perf-detail.txt -SimpleMatch '[maintenance-probe]' -Quiet) {
+            throw 'Maintenance reporter emitted a line while probes were disabled.'
           }
 
       - name: Build and test resource paths first
@@ -169,7 +182,7 @@ jobs:
       - name: Record experiment variant and preserve matching symbols
         shell: pwsh
         run: |
-          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; reference_commit = '8509b02d787829cc801cca22256adc2af196df36'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false; resource_probe_available = $true; output_1080_probe_available = $true; bda_probe_available = $true; detailed_tracy_zones_available = $true; native_srt_available = $true; native_srt_consistent_pointers = $true; srt_probe_available = $true } |
+          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; reference_commit = '8509b02d787829cc801cca22256adc2af196df36'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false; resource_probe_available = $true; output_1080_probe_available = $true; bda_probe_available = $true; detailed_tracy_zones_available = $true; native_srt_available = $true; native_srt_consistent_pointers = $true; srt_probe_available = $true; maintenance_probe_available = $true; suspend_point_link_probe_available = $true } |
             ConvertTo-Json | Set-Content _Build/windows/install/experiment.json
           New-Item -ItemType Directory -Path _Build/windows/install/debug -Force | Out-Null
           Copy-Item -LiteralPath _Build/windows/kyty_emulator.pdb -Destination _Build/windows/install/debug -ErrorAction Stop

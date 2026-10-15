@@ -621,6 +621,7 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 }
 
 void BufferCache::RunGarbageCollector() {
+	KYTY_PROFILER_FUNCTION();
 	const auto tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();

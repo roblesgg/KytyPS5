@@ -165,4 +165,43 @@ inline SrtTotals SnapshotSrt() {
 	    data.srt_interpreted_attempts.load(std::memory_order_relaxed),
 	};
 }
+
+// Counts maintenance entry and suspend-point queue/processing boundaries only.
+struct MaintenanceTotals {
+	uint64_t gc_runs                  = 0;
+	uint64_t suspend_points_enqueued  = 0;
+	uint64_t suspend_points_processed = 0;
+};
+
+struct MaintenanceCounters {
+	std::atomic<uint64_t> gc_runs {0};
+	std::atomic<uint64_t> suspend_points_enqueued {0};
+	std::atomic<uint64_t> suspend_points_processed {0};
+};
+
+inline MaintenanceCounters& MaintenanceData() {
+	static MaintenanceCounters counters;
+	return counters;
+}
+
+inline void RecordGcRun() {
+	if (Enabled()) Add(MaintenanceData().gc_runs, 1u);
+}
+
+inline void RecordSuspendPointEnqueued() {
+	if (Enabled()) Add(MaintenanceData().suspend_points_enqueued, 1u);
+}
+
+inline void RecordSuspendPointProcessed() {
+	if (Enabled()) Add(MaintenanceData().suspend_points_processed, 1u);
+}
+
+inline MaintenanceTotals SnapshotMaintenance() {
+	const auto& data = MaintenanceData();
+	return {
+	    data.gc_runs.load(std::memory_order_relaxed),
+	    data.suspend_points_enqueued.load(std::memory_order_relaxed),
+	    data.suspend_points_processed.load(std::memory_order_relaxed),
+	};
+}
 } // namespace ResourceProbe
