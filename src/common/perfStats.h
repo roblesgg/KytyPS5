@@ -210,6 +210,17 @@ private:
 			    static_cast<unsigned long long>(bda.bda_entries_visited - m_bda.bda_entries_visited));
 			Write(line);
 			m_bda = bda;
+			const auto srt = ResourceProbe::SnapshotSrt();
+			std::snprintf(line, sizeof(line),
+			              "[srt-probe] t=%.1fs window=%.3fs native_attempts=%llu"
+			              " interpreted_attempts=%llu\n",
+			              std::chrono::duration<double>(now - m_start).count(), seconds,
+			              static_cast<unsigned long long>(srt.srt_native_attempts -
+			                                              m_srt.srt_native_attempts),
+			              static_cast<unsigned long long>(srt.srt_interpreted_attempts -
+			                                              m_srt.srt_interpreted_attempts));
+			Write(line);
+			m_srt = srt;
 		}
 		m_flips    = flips;
 		m_previous = now;
@@ -222,6 +233,7 @@ private:
 	uint64_t                        m_flips = 0;
 	ResourceProbe::Totals           m_resource {};
 	ResourceProbe::BdaTotals        m_bda {};
+	ResourceProbe::SrtTotals        m_srt {};
 	std::jthread                    m_thread;
 };
 } // namespace PerfStats

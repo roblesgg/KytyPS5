@@ -1114,6 +1114,7 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 		}
 	}
 	if (capture_indirect_reads) plan.resource_tracking_complete &= !program.has_address_writes;
+	CompileSrtWalker(plan);
 	return plan;
 }
 

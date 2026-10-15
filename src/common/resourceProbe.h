@@ -133,4 +133,36 @@ inline BdaTotals SnapshotBda() {
 	    data.bda_entries_visited.load(std::memory_order_relaxed),
 	};
 }
+
+// Attempts select a RefreshFlatBuffer path, regardless of its eventual result.
+struct SrtTotals {
+	uint64_t srt_native_attempts      = 0;
+	uint64_t srt_interpreted_attempts = 0;
+};
+
+struct SrtCounters {
+	std::atomic<uint64_t> srt_native_attempts {0};
+	std::atomic<uint64_t> srt_interpreted_attempts {0};
+};
+
+inline SrtCounters& SrtData() {
+	static SrtCounters counters;
+	return counters;
+}
+
+// One increment per complete-plan refresh, never per DWORD or evaluated instruction.
+inline void RecordSrtAttempt(bool native) {
+	if (!Enabled()) return;
+	auto& data    = SrtData();
+	auto& counter = native ? data.srt_native_attempts : data.srt_interpreted_attempts;
+	Add(counter, 1u);
+}
+
+inline SrtTotals SnapshotSrt() {
+	const auto& data = SrtData();
+	return {
+	    data.srt_native_attempts.load(std::memory_order_relaxed),
+	    data.srt_interpreted_attempts.load(std::memory_order_relaxed),
+	};
+}
 } // namespace ResourceProbe
