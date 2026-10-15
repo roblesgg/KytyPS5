@@ -3,6 +3,11 @@
 #include "graphics/shader/recompiler/BufferFormat.h"
 
 #include <fmt/format.h>
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
 #include <xbyak/xbyak.h>
 #include <map>
 #include <new>

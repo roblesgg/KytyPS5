@@ -5,6 +5,11 @@
 #include "common/resourceProbe.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
 #include <xbyak/xbyak.h>
 
 #include <algorithm>
