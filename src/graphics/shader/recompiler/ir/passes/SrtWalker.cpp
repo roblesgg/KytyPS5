@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <unordered_map>
@@ -32,6 +34,25 @@ SrtRuntime CleanRuntime(SrtRuntime runtime) {
 namespace {
 
 constexpr uint64_t AddressMask = 0x0000ffffffffffffull;
+
+// Diagnostic runtime switch. Keep compiling native plans so eligibility and its
+// regression fixtures are unchanged; exact value "1" selects interpreter reads.
+bool InterpretedSrtRequested() {
+	static const bool enabled = [] {
+#ifdef _MSC_VER
+		char* value = nullptr;
+		std::size_t length = 0;
+		if (_dupenv_s(&value, &length, "KYTY_INTERPRETED_SRT") != 0) return false;
+		const bool result = value != nullptr && length == 2 && value[0] == '1';
+		std::free(value);
+		return result;
+#else
+		const char* value = std::getenv("KYTY_INTERPRETED_SRT");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+#endif
+	}();
+	return enabled;
+}
 
 bool AddSignedAddress(uint64_t base, int64_t offset, uint64_t& result) {
 	if (base > AddressMask) {
@@ -1093,7 +1114,8 @@ bool SrtWalker::EvaluateDescriptor(uint32_t source, DescriptorValue& result) {
 
 bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 	if (!m_program.srt_plan_complete) return false;
-	const bool native = m_program.srt_code && m_runtime.read_memory == nullptr;
+	const bool native = m_program.srt_code && m_runtime.read_memory == nullptr &&
+	                    !InterpretedSrtRequested();
 	ResourceProbe::RecordSrtAttempt(native);
 	if (native) {
 		flat.resize(m_program.srt_reads.size());

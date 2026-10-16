@@ -151,6 +151,10 @@ jobs:
           cmake --build _Build/windows --target scalar_provenance_tests resource_tracking_tests resource_materialization_tests --parallel
           if errorlevel 1 exit /b %errorlevel%
           ctest --test-dir _Build/windows --output-on-failure -R "^(scalar_provenance|resource_tracking|resource_materialization)$"
+          if errorlevel 1 exit /b %errorlevel%
+          set KYTY_INTERPRETED_SRT=1
+          set KYTY_RESOURCE_PROBE=1
+          ctest --test-dir _Build/windows --output-on-failure -R "^(resource_tracking|resource_materialization)$"
 
       - name: Build
         shell: cmd
@@ -161,6 +165,11 @@ jobs:
             resource_tracking_tests scalar_provenance_tests shader_cfg_tests ^
             resource_materialization_tests shader_vertex_metadata_tests archive_file_tests avplayer_file_tests ^
             bit_array_tests memory_tracker_tests --parallel
+
+      - name: Test offline guest shader decoder
+        shell: pwsh
+        run: |
+          ./tests/testOfflineGuestDecode.ps1 -Executable ./_Build/windows/shader_recompiler_compute_tests.exe
 
       - name: Test
         shell: cmd
@@ -189,7 +198,7 @@ jobs:
       - name: Record experiment variant and preserve matching symbols
         shell: pwsh
         run: |
-          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; reference_commit = '8509b02d787829cc801cca22256adc2af196df36'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false; resource_probe_available = $true; output_1080_probe_available = $true; bda_probe_available = $true; detailed_tracy_zones_available = $true; native_srt_available = $true; native_srt_consistent_pointers = $true; srt_probe_available = $true; maintenance_probe_available = $true; suspend_point_link_probe_available = $true; bda_sweep_cache_available = $true; batch_indirect_sh_readback_available = $true; null_effective_scalar_address_zero = $true; gpu_compute_tests_packaged = $true } |
+          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; reference_commit = '8509b02d787829cc801cca22256adc2af196df36'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false; resource_probe_available = $true; output_1080_probe_available = $true; bda_probe_available = $true; detailed_tracy_zones_available = $true; native_srt_available = $true; native_srt_consistent_pointers = $true; srt_probe_available = $true; maintenance_probe_available = $true; suspend_point_link_probe_available = $true; bda_sweep_cache_available = $true; batch_indirect_sh_readback_available = $true; null_effective_scalar_address_zero = $true; gpu_compute_tests_packaged = $true; interpreted_srt_switch_available = $true; resource_overlap_diagnostic_available = $true; offline_guest_shader_decode_available = $true } |
             ConvertTo-Json | Set-Content _Build/windows/install/experiment.json
           Copy-Item -LiteralPath _Build/windows/shader_recompiler_compute_tests.exe -Destination _Build/windows/install -ErrorAction Stop
           New-Item -ItemType Directory -Path _Build/windows/install/debug -Force | Out-Null

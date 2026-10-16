@@ -964,6 +964,71 @@ std::string Hex(u32 value) {
 void Require(const char *shader_name, const char *stage, bool value,
              const std::string &message);
 
+int DecodeGuestShaderFile(const char *path) {
+  namespace Decoder = ShaderRecompiler::Decoder;
+  constexpr uint64_t MaxBytes = 16ull * 1024 * 1024;
+  Common::File file(path, Common::File::Mode::Read);
+  if (file.IsInvalid()) {
+    std::fprintf(stderr, "guest decode: cannot open input\n");
+    return 2;
+  }
+  const auto bytes = file.Size();
+  if (bytes == 0 || bytes > MaxBytes || bytes % sizeof(uint32_t) != 0) {
+    std::fprintf(stderr, "guest decode: input must contain 1..16 MiB of complete DWORDs\n");
+    return 2;
+  }
+  const auto count = static_cast<uint32_t>(bytes / sizeof(uint32_t));
+  // The core decoder trusts complete instructions. Padding permits a framing
+  // check before it sees the original span, including a missing literal/NSA word.
+  std::vector<uint32_t> words(count + Decoder::MaxInstructionRawWords, 0);
+  uint32_t read = 0;
+  file.Read(words.data(), static_cast<uint32_t>(bytes), &read);
+  file.Close();
+  if (read != bytes) {
+    std::fprintf(stderr, "guest decode: incomplete input read\n");
+    return 2;
+  }
+  const auto invalid = [](const char *reason, uint32_t pc) {
+    std::fprintf(stderr, "guest decode: %s at pc=0x%08" PRIx32 "\n", reason, pc);
+    return 2;
+  };
+  std::vector<uint8_t> targets(count, 0);
+  bool ended = false;
+  for (uint32_t index = 0; index < count;) {
+    if (Decoder::GetInstructionFamily(words[index]) == Decoder::Family::Unknown)
+      return invalid("unknown instruction family", index * 4u);
+    Decoder::Instruction instruction{};
+    Decoder::DecodeInstruction(words, index, instruction);
+    if (instruction.word_count == 0 ||
+        instruction.word_count > Decoder::MaxInstructionRawWords ||
+        instruction.word_count > count - index)
+      return invalid("truncated instruction", index * 4u);
+    if (Decoder::IsDirectBranch(instruction.opcode)) {
+      const auto target = instruction.branch_target;
+      if ((target & 3u) != 0 || target / 4u >= count)
+        return invalid("branch target outside input", instruction.pc);
+      targets[target / 4u] = 1;
+    }
+    index += instruction.word_count;
+    if (instruction.opcode == Decoder::Opcode::S_ENDPGM &&
+        (index >= count || targets[index] == 0)) {
+      ended = true;
+      break;
+    }
+  }
+  if (!ended) return invalid("missing S_ENDPGM", count * 4u);
+  Decoder::Program program;
+  Decoder::DecodeProgram(std::span<const uint32_t>(words.data(), count), program);
+  const auto text = Decoder::ProgramToString(program);
+  std::printf("; guest shader DWORDs=%" PRIu32 " instructions=%zu\n", count,
+              program.instructions.size());
+  if (std::fwrite(text.data(), 1, text.size(), stdout) != text.size()) {
+    std::fprintf(stderr, "guest decode: output write failed\n");
+    return 2;
+  }
+  return 0;
+}
+
 void EnsureConfigInitialized() {
   static bool config_initialized = false;
   if (!config_initialized) {
@@ -42378,6 +42443,14 @@ int main(int argc, char **argv) {
   using namespace Libs::Graphics;
 
   std::setvbuf(stdout, nullptr, _IONBF, 0);
+  // Offline decoder dispatches before config, guest memory, shader runtime or Vulkan setup.
+  if (argc >= 2 && std::strcmp(argv[1], "--decode-guest-shader") == 0) {
+    if (argc != 3) {
+      std::fprintf(stderr, "usage: --decode-guest-shader <original-shader.bin>\n");
+      return 2;
+    }
+    return DecodeGuestShaderFile(argv[2]);
+  }
   EnsureConfigInitialized();
   CheckLeastRecentlyUsedCacheOrdering();
   if (argc == 2 && std::strcmp(argv[1], "--thread-dimensions-only") == 0) {

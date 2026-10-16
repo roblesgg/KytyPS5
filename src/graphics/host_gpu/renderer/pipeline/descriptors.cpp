@@ -1037,7 +1037,28 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 					const auto& written = writer->buffer_sources[resource.descriptor_index];
 					if (written.size != 0 && ImageRangeOverlaps(address, size,
 					                                          written.address, written.size)) {
-						EXIT("scalar resource reads overlap a shader buffer write\n");
+						const auto resource_index = static_cast<size_t>(&resource - program.info.buffers.data());
+						const auto& reader_program = *reader->runtime->program;
+						const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(
+						    writer->runtime->resources->buffers[resource_index]);
+						EXIT("scalar resource reads overlap a shader buffer write\n"
+						     "[resource-overlap] bind=%u reader_stage=%u reader_hash=0x%016" PRIx64
+						     " read_address=0x%016" PRIx64 " read_size=0x%" PRIx64
+						     " writer_stage=%u writer_hash=0x%016" PRIx64 " resource=%zu"
+						     " source=%u descriptor_index=%u first_use_pc=0x%08" PRIx32
+						     " read=%u written=%u atomic=%u max_extent=%u"
+						     " write_address=0x%016" PRIx64 " write_size=0x%" PRIx64
+						     " descriptor_address=0x%016" PRIx64 " descriptor_size=0x%" PRIx64
+						     " stride=%u records=0x%08" PRIx32
+						     " sharp=%08" PRIx32 ":%08" PRIx32 ":%08" PRIx32 ":%08" PRIx32 "\n",
+						     static_cast<uint32_t>(pipeline_bind_point), static_cast<uint32_t>(reader_program.stage),
+						     reader_program.shader_hash, address, size, static_cast<uint32_t>(program.stage),
+						     program.shader_hash, resource_index, resource.source, resource.descriptor_index,
+						     resource.first_use_pc, static_cast<uint32_t>(resource.read),
+						     static_cast<uint32_t>(resource.written), static_cast<uint32_t>(resource.atomic),
+						     resource.max_byte_extent, written.address, written.size, descriptor.Base48(),
+						     descriptor.GetSize(), static_cast<uint32_t>(descriptor.Stride()), descriptor.NumRecords(),
+						     descriptor.fields[0], descriptor.fields[1], descriptor.fields[2], descriptor.fields[3]);
 					}
 				}
 			}
