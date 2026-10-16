@@ -103,6 +103,8 @@ public:
 	void FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache_action, void* dst_gpu_addr,
 	                       uint32_t value);
 	void PrepareCpuFlip(uint64_t request_id);
+	// Optional eager synchronization; callers retain live guest-memory reads.
+	[[nodiscard]] bool BatchIndirectShaderRegisters(uint64_t address, uint32_t pairs);
 	void SynchronizeGpu();
 	void EmitGlobalBarrier();
 	void TriggerEopEventAtEndOfPipe(uint32_t interrupt_context_id);

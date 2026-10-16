@@ -453,7 +453,19 @@ void CompileSrtWalker(ResourcePlan& program) {
 			const auto index = read->value.ResolveInstruction()->EvaluationIndex(program.evaluation_value_count);
 			using Entry = ResourcePlan::EvaluationContext::Entry;
 			const auto slot = code.rdx + index * sizeof(Entry);
-			code.mov(code.r10d, code.dword[code.rdi + offset]);
+			if (offset <= 0) {
+				// Missing BDA address zero yields a zero DWORD on the GPU. Test the
+				// effective 64-bit address, not only the table base or its low word.
+				Xbyak::Label loaded;
+				code.lea(code.r11, code.ptr[code.rdi + offset]);
+				code.xor_(code.r10d, code.r10d);
+				code.test(code.r11, code.r11);
+				code.jz(loaded, Xbyak::CodeGenerator::T_NEAR);
+				code.mov(code.r10d, code.dword[code.r11]);
+				code.L(loaded);
+			} else {
+				code.mov(code.r10d, code.dword[code.rdi + offset]);
+			}
 			code.mov(code.dword[code.rsi + read->flat_offset * sizeof(uint32_t)], code.r10d);
 			code.mov(code.qword[slot + offsetof(Entry, value)], code.r10);
 			code.mov(code.qword[slot + offsetof(Entry, generation)], code.rcx);
@@ -683,7 +695,12 @@ bool SrtWalker::EvaluateRawRead(const Inst& inst, uint64_t& result) {
 		}
 	} else {
 		if (vector) return false;
-		std::memcpy(&word, reinterpret_cast<const void*>(address), sizeof(word));
+		// Match an ordinary scalar-address GPU load from missing BDA address zero.
+		// Explicit readers above retain their own failure/zero semantics, and a null
+		// base plus a nonzero offset is not covered by this narrow rule.
+		if (mem.kind != ResourceKind::ScalarAddress || address != 0u) {
+			std::memcpy(&word, reinterpret_cast<const void*>(address), sizeof(word));
+		}
 	}
 	result = word;
 	return true;

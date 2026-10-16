@@ -93,6 +93,7 @@ bool RenderContext::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 
 void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 	std::lock_guard lock(m_mapped_ranges_mutex);
+	++m_mapped_ranges_revision;
 	m_mapped_ranges.Add(vaddr, size);
 }
 
@@ -116,6 +117,7 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		m_buffer_cache.InvalidateMemory(vaddr, size);
 		m_texture_cache.UnmapMemory(vaddr, size);
 		std::lock_guard lock(m_mapped_ranges_mutex);
+		++m_mapped_ranges_revision;
 		m_mapped_ranges.Subtract(vaddr, size);
 	};
 	// Shutdown still owns the GPU while queued rendering drains, but its command lane no
@@ -138,11 +140,30 @@ void RenderContext::PrepareBda() {
 		m_bda_logged = true;
 	}
 	std::shared_lock lock(m_mapped_ranges_mutex);
+	const auto stamp = [this] {
+		return BdaSweepCache::Stamp {m_buffer_cache.GetCpuWriteSnapshot(),
+		                             m_buffer_cache.GetBdaCatalogRevision(),
+		                             m_mapped_ranges_revision};
+	};
+	const bool cache_enabled = BdaSweepCacheEnabled();
+	BdaSweepCache::Stamp before {};
+	// A skip omits only the repeated clean upload scan. GPU fault processing still runs.
+	m_fault_process_pending = true;
+	if (cache_enabled) {
+		before = stamp();
+		if (m_bda_sweep_cache.CanSkip(before)) {
+			if (probe_enabled) {
+				probe.bda_sweep_skips = 1;
+				ResourceProbe::SubmitBda(probe);
+			}
+			return;
+		}
+	}
 	m_mapped_ranges.ForEach([this, &probe, visits](uint64_t start, uint64_t end) {
 		if (visits != nullptr) ++probe.bda_mapped_ranges;
 		m_buffer_cache.SynchronizeBuffersInRange(start, end - start, visits);
 	});
-	m_fault_process_pending = true;
+	if (cache_enabled) m_bda_sweep_cache.CompleteSweep(before, stamp());
 	if (probe_enabled) ResourceProbe::SubmitBda(probe);
 }
 

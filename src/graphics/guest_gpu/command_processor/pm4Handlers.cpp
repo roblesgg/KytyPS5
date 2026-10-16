@@ -20,6 +20,7 @@
 #include <atomic>
 #include <bit>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -66,6 +67,23 @@ constexpr uint32_t GcrKnownMask             = GcrGl2MetadataInvalidate | GcrGl0V
                                               GcrGl1Invalidate | GcrGl2Unshared | GcrGl2Invalidate |
                                               GcrGl2Writeback | GcrOrder012 | GcrOrder210;
 constexpr uint32_t RegisterSelectorMask     = 0x70000000u;
+
+bool BatchIndirectShReadbackEnabled() {
+	static const bool enabled = [] {
+#ifdef _MSC_VER
+		char* value = nullptr;
+		std::size_t length = 0;
+		if (_dupenv_s(&value, &length, "KYTY_BATCH_INDIRECT_SH_READBACK") != 0) return false;
+		const bool result = value != nullptr && length == 2 && value[0] == '1';
+		std::free(value);
+		return result;
+#else
+		const char* value = std::getenv("KYTY_BATCH_INDIRECT_SH_READBACK");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+#endif
+	}();
+	return enabled;
+}
 
 constexpr uint32_t NormalizeRegisterOffset(uint32_t raw_offset) {
 	return raw_offset & ~RegisterSelectorMask;
@@ -2046,6 +2064,11 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		EXIT("indirect SH registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
 	}
 	const auto indirect_address = reinterpret_cast<uint64_t>(indirect_buffer);
+	if (BatchIndirectShReadbackEnabled()) {
+		// SH handlers only update CPU register state. Publish the table's GPU-owned
+		// pages together, then retain the original ordered, live reads below.
+		(void)cp.BatchIndirectShaderRegisters(indirect_address, indirect_num_dw);
+	}
 
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
 		auto raw_cmd_offset = indirect_buffer[0];

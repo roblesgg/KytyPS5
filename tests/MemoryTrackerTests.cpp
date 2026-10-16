@@ -341,6 +341,104 @@ void TestQueriesDoNotRequireMappedOwnership() {
         "unowned tracker range did not expose its initial CPU-dirty state");
 }
 
+void TestBdaSweepEpoch() {
+  using Libs::Graphics::BdaSweepCache;
+  using Libs::Graphics::CpuWriteEpoch;
+  CpuWriteEpoch epoch;
+  BdaSweepCache cache;
+  auto stamp = [&] { return BdaSweepCache::Stamp {epoch.Read(), 7, 9}; };
+  const auto initial = stamp();
+  Check(!cache.CanSkip(initial), "BDA cache accepted no baseline");
+  cache.CompleteSweep(initial, stamp());
+  Check(cache.CanSkip(stamp()), "stable BDA sweep was not reusable");
+  auto changed = stamp();
+  ++changed.buffers;
+  Check(!cache.CanSkip(changed), "new/merged/retired buffer reused BDA baseline");
+  changed = stamp();
+  ++changed.mappings;
+  Check(!cache.CanSkip(changed), "map/unmap reused BDA baseline");
+  {
+    CpuWriteEpoch::Guard first(epoch);
+    Check(!cache.CanSkip(stamp()), "in-flight CPU writer reused BDA baseline");
+    {
+      CpuWriteEpoch::Guard second(epoch);
+      Check(!epoch.Read().quiescent, "nested writer looked quiescent");
+    }
+    Check(!epoch.Read().quiescent, "nested writer exit hid another writer");
+  }
+  Check(epoch.Read().quiescent && !cache.CanSkip(stamp()),
+        "completed CPU write did not invalidate BDA baseline");
+  const auto before = stamp();
+  std::binary_semaphore started {0};
+  std::binary_semaphore finish {0};
+  std::jthread writer([&] {
+    CpuWriteEpoch::Guard active(epoch);
+    started.release();
+    finish.acquire();
+  });
+  started.acquire();
+  cache.CompleteSweep(before, stamp());
+  Check(!cache.CanSkip(stamp()), "writer during BDA sweep installed baseline");
+  finish.release();
+  writer.join();
+  cache.CompleteSweep(before, stamp());
+  Check(!cache.CanSkip(stamp()), "write behind traversal installed baseline");
+  const auto clean = stamp();
+  cache.CompleteSweep(clean, stamp());
+  Check(cache.CanSkip(stamp()), "stable sweep after write did not recover");
+}
+
+void TestTrackerBdaEpoch() {
+  TrackerHarness harness;
+  auto &tracker = harness.tracker;
+  auto *memory = Allocate(harness.page_manager, 1);
+  const auto address = reinterpret_cast<uint64_t>(memory);
+  const auto size = harness.page_manager.GetPageSize();
+  auto previous = tracker.GetCpuWriteSnapshot();
+  Check(tracker.IsRegionCpuModified(address, size), "cold BDA tracker not dirty");
+  auto current = tracker.GetCpuWriteSnapshot();
+  if (!Libs::Graphics::BdaSweepCacheEnabled()) {
+    Check(previous.quiescent && current.quiescent &&
+              current.generation == previous.generation,
+          "disabled BDA cache tracked cold publication");
+    tracker.InvalidateRegion(address, size, [] {});
+    tracker.MarkRegionAsCpuModified(address, size);
+    tracker.UntrackMemory(address, size);
+    const auto disabled = tracker.GetCpuWriteSnapshot();
+    Check(disabled.quiescent && disabled.generation == previous.generation,
+          "disabled BDA cache changed the CPU write epoch");
+    Release(memory);
+    return;
+  }
+  Check(previous.quiescent && current.quiescent &&
+            current.generation != previous.generation,
+        "cold RegionManager publication did not invalidate BDA baseline");
+  previous = current;
+  tracker.ForEachUploadRange(address, size, true,
+                            [](uint64_t, uint64_t) noexcept {}, []() noexcept {});
+  current = tracker.GetCpuWriteSnapshot();
+  Check(current.quiescent && current.generation == previous.generation,
+        "GPU write/CPU upload changed CPU mutation generation");
+  tracker.InvalidateRegion(address, size, [&] {
+    Check(!tracker.GetCpuWriteSnapshot().quiescent,
+          "invalidation did not guard its GPU flush callback");
+    tracker.ForEachDownloadRange<true>(address, size,
+                                      [](uint64_t, uint64_t) noexcept {});
+    tracker.MarkRegionAsCpuModified(address, size);
+    Check(!tracker.GetCpuWriteSnapshot().quiescent,
+          "nested CPU mark prematurely ended invalidation guard");
+  });
+  current = tracker.GetCpuWriteSnapshot();
+  Check(current.quiescent && current.generation != previous.generation,
+        "invalidation/CPU mark did not advance CPU mutation generation");
+  previous = current;
+  tracker.UntrackMemory(address, size);
+  current = tracker.GetCpuWriteSnapshot();
+  Check(current.quiescent && current.generation != previous.generation,
+        "untrack did not invalidate BDA baseline");
+  Release(memory);
+}
+
 void TestConcurrentRegionPublication() {
   TrackerHarness harness;
   auto &tracker = harness.tracker;
@@ -1200,6 +1298,8 @@ int main(int argc, char **argv) {
   TestGuestRange();
   TestRangeSet();
   TestQueriesDoNotRequireMappedOwnership();
+  TestBdaSweepEpoch();
+  TestTrackerBdaEpoch();
   TestConcurrentRegionPublication();
   TestCpuDirtyUpload();
   TestCleanUploadPreservesOwnership();

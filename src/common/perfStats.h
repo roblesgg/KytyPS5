@@ -203,11 +203,12 @@ private:
 			std::snprintf(
 			    line, sizeof(line),
 			    "[bda-probe] t=%.1fs window=%.3fs bda_calls=%llu bda_mapped_ranges=%llu"
-			    " bda_entries_visited=%llu\n",
+			    " bda_entries_visited=%llu bda_sweep_skips=%llu\n",
 			    std::chrono::duration<double>(now - m_start).count(), seconds,
 			    static_cast<unsigned long long>(bda.bda_calls - m_bda.bda_calls),
 			    static_cast<unsigned long long>(bda.bda_mapped_ranges - m_bda.bda_mapped_ranges),
-			    static_cast<unsigned long long>(bda.bda_entries_visited - m_bda.bda_entries_visited));
+			    static_cast<unsigned long long>(bda.bda_entries_visited - m_bda.bda_entries_visited),
+			    static_cast<unsigned long long>(bda.bda_sweep_skips - m_bda.bda_sweep_skips));
 			Write(line);
 			m_bda = bda;
 			const auto srt = ResourceProbe::SnapshotSrt();

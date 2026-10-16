@@ -2,6 +2,7 @@
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_MEMORYTRACKER_H_
 
 #include "common/assert.h"
+#include "graphics/host_gpu/bdaSweepCache.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/rangeSet.h"
 #include "graphics/host_gpu/regionManager.h"
@@ -23,6 +24,13 @@ public:
 
 	KYTY_CLASS_NO_COPY(MemoryTracker);
 
+	[[nodiscard]] CpuWriteEpoch::Guard BeginCpuWrite(bool enabled = true) noexcept {
+		return CpuWriteEpoch::Guard {m_cpu_write_epoch, enabled && BdaSweepCacheEnabled()};
+	}
+	[[nodiscard]] CpuWriteEpoch::Snapshot GetCpuWriteSnapshot() const noexcept {
+		return m_cpu_write_epoch.Read();
+	}
+
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size);
@@ -34,6 +42,7 @@ public:
 	void InvalidateRegion(uint64_t vaddr, uint64_t size, Flush&& on_flush) noexcept {
 		static_assert(std::is_invocable_v<Flush&>);
 		CheckNotInUploadCallback();
+		const auto cpu_write = BeginCpuWrite();
 
 		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			const bool should_flush = [&] {
@@ -150,6 +159,7 @@ private:
 	std::vector<std::unique_ptr<RegionManager>>    m_region_storage;
 	std::mutex                                     m_region_mutex;
 	PageManager&                                   m_page_manager;
+	CpuWriteEpoch                                  m_cpu_write_epoch;
 };
 
 } // namespace Libs::Graphics

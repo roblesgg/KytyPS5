@@ -1440,6 +1440,21 @@ void CommandProcessor::PrepareCpuFlip(uint64_t request_id) {
 	GetScheduler().Flush();
 }
 
+bool CommandProcessor::BatchIndirectShaderRegisters(uint64_t address, uint32_t pairs) {
+	// Cache-index and tracker queries are serialized on the guest GPU lane. Keep legacy
+	// direct-parser host tests and malformed/unmapped streams on their existing path.
+	if (!GuestGpu::IsGpuThread() || pairs == 0 || pairs > 0x3fffu) return false;
+	const GuestRange range {address, uint64_t {pairs} * 2u * sizeof(uint32_t)};
+	if (!range.Valid() || !m_renderer.IsMapped(range.address, range.size)) return false;
+	auto& cache = m_renderer.GetBufferCache();
+	// Avoid discovery/merging/allocation for ordinary CPU-owned tables. This query is
+	// page-granular, matching the read-fault path, including dirty neighbouring bytes.
+	if (!cache.IsRegionGpuModified(range.address, range.size)) return false;
+	KYTY_PROFILER_BLOCK("BatchIndirectShaderRegisters");
+	cache.ReadMemory(range.address, range.size);
+	return true;
+}
+
 void CommandProcessor::SynchronizeGpu() {
 	GetScheduler().Finish();
 }

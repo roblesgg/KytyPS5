@@ -354,6 +354,146 @@ void TestNativeNestedSrtUsesCapturedPointer() {
   }
 }
 
+void TestNullEffectiveScalarAddress() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  const auto pointer_words = [](uint64_t address) {
+    return std::array<uint32_t, 2>{static_cast<uint32_t>(address) | 3u,
+                                  static_cast<uint32_t>(address >> 32u) | 0xabcd0000u};
+  };
+  for (const bool nested : {false, true}) {
+    for (const int32_t relative : {0, -4}) {
+      if (nested && relative != 0) continue;
+      uint32_t sibling = 0x12345678u;
+      const auto sibling_pointer = pointer_words(reinterpret_cast<uint64_t>(&sibling));
+      const auto child_pointer = pointer_words(relative < 0 ? 4u : 0u);
+      std::array<uint32_t, 2> table = child_pointer;
+      const auto root_pointer = nested
+          ? pointer_words(reinterpret_cast<uint64_t>(table.data())) : child_pointer;
+      const std::array<uint32_t, 6> user_data{
+          sibling_pointer[0], sibling_pointer[1], 0u, 0u,
+          root_pointer[0], root_pointer[1]};
+      std::vector<uint32_t> native_flat;
+      for (const bool native : {true, false}) {
+        auto program = SrtProgram(0u);
+        program.user_data_count = 6;
+        program.memory_info[0].offset = static_cast<uint32_t>(relative);
+        auto &block = *program.blocks[0];
+        const auto emit = [&](ValueOpcode opcode, std::initializer_list<Value> args) {
+          return Value(&block.AppendNewInst(opcode, args));
+        };
+        const auto word = [&](uint32_t reg) {
+          return native ? emit(ValueOpcode::GetUserData, {Value(ScalarReg(reg))})
+                        : Value(user_data[reg]);
+        };
+        const auto read = [&](Value handle, uint32_t offset, uint32_t memory) {
+          const auto value = emit(ValueOpcode::LoadAddressU32,
+              {handle, Value(offset), Value(0u), Value(true)});
+          value.Instruction()->SetFlags(MemoryFlags{.index = memory});
+          program.srt_reads.push_back(
+              {value, static_cast<uint32_t>(program.srt_reads.size())});
+          return value;
+        };
+        auto *leaf_handle = program.srt_reads[0].value.Instruction()->Arg(0).Instruction();
+        if (nested) {
+          program.memory_info.push_back(
+              {.kind = ResourceKind::ScalarAddress, .planning_only = true});
+          const auto parent = emit(ValueOpcode::GetAddressResource, {word(4), word(5)});
+          leaf_handle->SetArg(0, read(parent, 0u, 1u));
+          leaf_handle->SetArg(1, read(parent, 4u, 1u));
+        } else {
+          leaf_handle->SetArg(0, word(4));
+          leaf_handle->SetArg(1, word(5));
+        }
+        const auto sibling_memory = static_cast<uint32_t>(program.memory_info.size());
+        program.memory_info.push_back(
+            {.kind = ResourceKind::ScalarAddress, .planning_only = true});
+        read(emit(ValueOpcode::GetAddressResource, {word(0), word(1)}), 0u, sibling_memory);
+        auto plan = ExtractResourcePlan(program);
+        Check((plan.srt_code != nullptr) == native,
+              "null-effective fixture selected the wrong SRT implementation");
+        uint32_t strict_reads = 0;
+        const SrtRuntime runtime{.user_data = user_data, .userdata = &strict_reads,
+            .read_specialization_memory = RejectSpecializationRead};
+        std::vector<uint32_t> flat;
+        {
+          SrtWalker walker(plan, runtime);
+          Check(walker.RefreshFlatBuffer(flat) && strict_reads == 0 &&
+                    flat.size() == program.srt_reads.size() && flat[0] == 0u &&
+                    flat.back() == sibling,
+                "ordinary null-effective read failed or consulted the strict reader");
+          sibling ^= 0xffffffffu;
+          for (uint32_t slot = 0; slot < plan.srt_reads.size(); ++slot) {
+            uint32_t memo = 0xffffffffu;
+            Check(walker.Evaluate(plan.srt_reads[slot].value, memo) &&
+                      memo == flat[plan.srt_reads[slot].flat_offset],
+                  "null-effective refresh did not seed the full scalar memo");
+          }
+          sibling ^= 0xffffffffu;
+        }
+        if (native) native_flat = flat;
+        else Check(flat == native_flat,
+                   "native and interpreted null-effective scalar snapshots differ");
+        ResourceSnapshot snapshot;
+        ResourceSpecialization specialization;
+        Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+                  snapshot.flattened_srt == flat && strict_reads == 0,
+              "ordinary null-effective success did not reach resource materialization");
+      }
+    }
+  }
+  // Repeat callback contracts with an immediate-root interpreter plan and a
+  // compiled SGPR plan. The latter must still select the callback at runtime.
+  for (const bool native_eligible : {false, true}) {
+    for (const uint32_t offset : {0u, 4u}) {
+      auto program = SrtProgram(0u);
+      program.user_data_count = 2;
+      const auto user_data = pointer_words(0u);
+      auto *raw = program.srt_reads[0].value.Instruction();
+      raw->SetArg(1, Value(offset));
+      if (native_eligible) {
+        auto &block = *program.blocks[0];
+        auto *handle = raw->Arg(0).Instruction();
+        for (uint32_t reg = 0; reg < 2u; ++reg) {
+          auto &word = block.AppendNewInst(ValueOpcode::GetUserData,
+                                           {Value(ScalarReg(reg))});
+          handle->SetArg(reg, Value(&word));
+        }
+      }
+      auto plan = ExtractResourcePlan(program);
+      Check((plan.srt_code != nullptr) == native_eligible,
+            "callback fixture selected the wrong SRT implementation");
+      struct Reads { uint32_t count = 0; uint64_t address = UINT64_MAX; } reads;
+      const auto reject = +[](void *data, uint64_t address, std::span<uint32_t>) {
+        auto &reads = *static_cast<Reads *>(data);
+        ++reads.count;
+        reads.address = address;
+        return false;
+      };
+      const SrtRuntime callback{.user_data = user_data, .read_memory = reject,
+                                .userdata = &reads};
+      std::vector<uint32_t> flat;
+      Check(!SrtWalker(plan, callback).RefreshFlatBuffer(flat) &&
+                reads.count == 1 && reads.address == offset,
+            "ordinary reader rejection became a successful zero read");
+      reads = {};
+      ResourceSnapshot snapshot;
+      ResourceSpecialization materialization;
+      Check(!MaterializeResources(plan, callback, snapshot, materialization) &&
+                reads.count == 1 && reads.address == offset,
+            "failed ordinary callback no longer rejects resource materialization");
+      reads = {};
+      const SrtRuntime specialization{.user_data = user_data, .userdata = &reads,
+                                      .read_specialization_memory = reject};
+      Check(!SrtWalker(plan, CleanRuntime(specialization)).RefreshFlatBuffer(flat) &&
+                reads.count == 1 && reads.address == offset,
+            "strict reader rejection became a successful zero read");
+      Check(!SrtWalker(plan, CleanRuntime({.user_data = user_data})).RefreshFlatBuffer(flat),
+            "missing strict reader became an ordinary successful zero read");
+    }
+  }
+}
+
+
 void TestIntegerRuntimeValueFollowsSrtReads() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   auto plan = SrtProgram(0x10000);
@@ -856,6 +996,7 @@ int main() {
   TestMappedSrtUsesDirectReaderByDefault();
   TestNativeNestedSrtRefresh();
   TestNativeNestedSrtUsesCapturedPointer();
+  TestNullEffectiveScalarAddress();
   TestIntegerRuntimeValueFollowsSrtReads();
   TestSrtAliasesRetainReadPolicy();
   TestUniformVectorDescriptorRead();

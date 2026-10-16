@@ -84,6 +84,11 @@ public:
 	void SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size,
 	                              uint64_t* entries_visited = nullptr);
 	void               RunGarbageCollector();
+	// Both the catalog revision and its readers are serialized on the GPU thread.
+	[[nodiscard]] uint64_t GetBdaCatalogRevision() const noexcept { return m_bda_catalog_revision; }
+	[[nodiscard]] CpuWriteEpoch::Snapshot GetCpuWriteSnapshot() const noexcept {
+		return m_memory_tracker.GetCpuWriteSnapshot();
+	}
 
 private:
 	friend struct BufferCacheTestAccess;
@@ -143,6 +148,7 @@ private:
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
+	uint64_t m_bda_catalog_revision = 0;
 };
 
 } // namespace Libs::Graphics

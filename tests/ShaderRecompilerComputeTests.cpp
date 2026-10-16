@@ -3,6 +3,7 @@
 #include "common/file.h"
 #include "common/hostException.h"
 #include "common/logging/log.h"
+#include "common/resourceProbe.h"
 #include "common/subsystems.h"
 #include "common/threads.h"
 #include "gpu_test_shaders/gpu_test_ms_depth_spv.h"
@@ -3714,6 +3715,112 @@ public:
             "write invalidation without a remaining copy did not establish CPU "
             "ownership");
 
+
+    // Exercise the exact batching entry on the GPU lane. Four tracker pages and
+    // two cache pages are consumed; the unrelated GPU-owned fifth page stays dirty.
+    constexpr uint64_t sh_table_address = fault_base + 0x1ffc;
+    constexpr uint32_t sh_table_pairs = 1026;
+    constexpr uint64_t sh_table_bytes = uint64_t{sh_table_pairs} * 8;
+    constexpr uint64_t sh_last_offset = sh_table_address + sh_table_bytes - 8;
+    constexpr uint64_t sh_last_value = sh_last_offset + 4;
+    constexpr uint64_t sh_outside_address = fault_base + 0x5000;
+    constexpr uint32_t sh_gpu_value = 0x13579bdfu;
+    constexpr uint32_t sh_cpu_value = 0x2468ace0u;
+    CommandProcessor sh_processor(resources, 0);
+    gpu.SendCommandSync([&] {
+      sh_processor.BufferInit();
+      const auto tick = scheduler.CurrentTick();
+      const auto clean_owner = BufferCacheTestAccess::PageOwner(
+          buffer_cache, fault_base + 0xf000);
+      Require("GpuCommandLane", "SH batch invalid and clean guards",
+              !sh_processor.BatchIndirectShaderRegisters(sh_table_address, 0) &&
+              !sh_processor.BatchIndirectShaderRegisters(sh_table_address, 0x4000) &&
+              !sh_processor.BatchIndirectShaderRegisters(LOWER_ADDRESS_SIZE - 4, 1) &&
+              !sh_processor.BatchIndirectShaderRegisters(fault_base + fault_size, 1) &&
+              !sh_processor.BatchIndirectShaderRegisters(fault_base + 0xf000, 1) &&
+              scheduler.CurrentTick() == tick &&
+              BufferCacheTestAccess::PageOwner(buffer_cache, fault_base + 0xf000) ==
+                  clean_owner,
+              "invalid, unmapped or clean SH table caused discovery/submission");
+      (void)buffer_cache.ObtainBuffer(sh_table_address, sh_table_bytes, true, false);
+      (void)buffer_cache.ObtainBuffer(sh_outside_address, 4, true, false);
+      buffer_cache.FillBuffer(sh_table_address, sh_table_bytes, Pm4::SH_NOP, false);
+      buffer_cache.FillBuffer(sh_last_offset, 4, Pm4::SPI_SHADER_USER_DATA_PS_0, false);
+      buffer_cache.FillBuffer(sh_last_value, 4, sh_gpu_value, false);
+      buffer_cache.FillBuffer(sh_outside_address, 4, 0x89abcdefu, false);
+      bool earlier_priority_complete = false;
+      scheduler.DeferPriorityOperation([&] { earlier_priority_complete = true; });
+      Require("GpuCommandLane", "SH batch multi-page publish",
+              sh_processor.BatchIndirectShaderRegisters(sh_table_address, sh_table_pairs) &&
+              earlier_priority_complete &&
+              !buffer_cache.IsRegionGpuModified(sh_table_address, sh_table_bytes) &&
+              buffer_cache.HasGpuDirtyBytes(sh_outside_address, 4),
+              "SH batch did not publish selected pages or consumed unrelated ownership");
+      uint32_t published = 0;
+      std::memcpy(&published, reinterpret_cast<const void *>(sh_last_value), 4);
+      Require("GpuCommandLane", "SH batch GPU data", published == sh_gpu_value,
+              "SH batch read stale guest backing");
+
+      // A legal CPU write after the synchronization must remain visible. The parser
+      // still reads the guest stream and never substitutes a prefetched snapshot.
+      buffer_cache.InvalidateMemory(sh_last_value, 4);
+      std::memcpy(reinterpret_cast<void *>(sh_last_value), &sh_cpu_value, 4);
+      std::array<uint32_t, 5> sh_commands{
+          KYTY_PM4(5, Pm4::IT_SET_SH_REG_INDIRECT, Pm4::R_ZERO),
+          static_cast<uint32_t>(sh_table_address),
+          static_cast<uint32_t>(sh_table_address >> 32u), 0x80000000u, sh_table_pairs};
+      Pm4Execution sh_execution;
+      Require("GpuCommandLane", "SH batch live reads",
+              sh_processor.Process(sh_execution, sh_commands) == Pm4ProcessResult::Complete &&
+              sh_processor.GetShCtx().GetPs().ps_user_sgpr.value[0] == sh_cpu_value,
+              "SH parser lost a CPU write after batching or changed register order");
+      // Drive the parser itself with GPU-owned pages. The earlier direct helper
+      // check published its table, so it could not prove this integration path.
+      (void)buffer_cache.ObtainBuffer(sh_table_address, sh_table_bytes, true, false);
+      buffer_cache.FillBuffer(sh_table_address, sh_table_bytes, Pm4::SH_NOP, false);
+      buffer_cache.FillBuffer(sh_last_offset, 4, Pm4::SPI_SHADER_USER_DATA_PS_0, false);
+      buffer_cache.FillBuffer(sh_last_value, 4, sh_gpu_value, false);
+      Require("GpuCommandLane", "SH parser GPU ownership setup",
+              buffer_cache.IsRegionGpuModified(sh_table_address, sh_table_bytes),
+              "SH parser fixture accidentally used CPU-owned backing");
+      bool batch_enabled = false;
+#ifdef _MSC_VER
+      char *batch_value = nullptr;
+      size_t batch_length = 0;
+      Require("GpuCommandLane", "SH flag read",
+              _dupenv_s(&batch_value, &batch_length,
+                        "KYTY_BATCH_INDIRECT_SH_READBACK") == 0,
+              "could not inspect the SH batch switch");
+      batch_enabled = batch_value != nullptr && batch_length == 2 && batch_value[0] == '1';
+      std::free(batch_value);
+#else
+      const char *batch_value = std::getenv("KYTY_BATCH_INDIRECT_SH_READBACK");
+      batch_enabled = batch_value != nullptr && std::strcmp(batch_value, "1") == 0;
+#endif
+      bool parser_priority_complete = false;
+      scheduler.DeferPriorityOperation([&] { parser_priority_complete = true; });
+      // OFF must use the same installed production read-fault route as a game.
+      LibKernel::Memory::InstallGpuResources(&resources);
+      const auto parser_tick = scheduler.CurrentTick();
+      Pm4Execution gpu_sh_execution;
+      const auto gpu_sh_result = sh_processor.Process(gpu_sh_execution, sh_commands);
+      const auto parser_submissions = scheduler.CurrentTick() - parser_tick;
+      LibKernel::Memory::InstallGpuResources(nullptr);
+      Require("GpuCommandLane", "SH parser GPU data and synchronization",
+              gpu_sh_result == Pm4ProcessResult::Complete && parser_priority_complete &&
+                  sh_processor.GetShCtx().GetPs().ps_user_sgpr.value[0] == sh_gpu_value &&
+                  !buffer_cache.IsRegionGpuModified(sh_table_address, sh_table_bytes) &&
+                  buffer_cache.HasGpuDirtyBytes(sh_outside_address, 4),
+              "SH parser lost GPU bytes, priority completion or unrelated ownership");
+      Require("GpuCommandLane", "SH parser selected readback path",
+              parser_submissions == (batch_enabled ? 1u : 4u),
+              "SH parser did not select one batched wait versus four page-fault waits");
+      std::printf("[gpu]     SH parser batch=%u submissions=%llu\n",
+                  batch_enabled ? 1u : 0u,
+                  static_cast<unsigned long long>(parser_submissions));
+      buffer_cache.ReadMemory(sh_outside_address, 4);
+    });
+
     resources.UnmapMemory(fault_base, fault_size);
     Require("GpuCommandLane", "processor fault unmap",
             Libs::LibKernel::Memory::KernelMunmap(fault_base, fault_size) == 0,
@@ -5136,6 +5243,133 @@ public:
             "a metadata write-only fill was not consumed as a clear");
     scheduler.Finish();
     std::printf("[host]    %-32s ok\n", name);
+  }
+
+  void CheckBdaSweepCacheIntegration() {
+    constexpr const char *name = "BdaSweepCacheIntegration";
+    constexpr uintptr_t base = 0x0000000207c00000ull;
+    constexpr uint64_t size = 0x10000;
+    constexpr uint64_t page = BufferCache::CACHING_PAGESIZE;
+    constexpr uint32_t first_value = 0x1234abcdu;
+    constexpr uint32_t updated_value = 0x98765432u;
+    constexpr uint32_t second_value = 0x13579bdfu;
+    Require(name, "probe switch", ResourceProbe::Enabled(),
+            "run this selector with KYTY_RESOURCE_PROBE=1 for exact skip assertions");
+    EnsureRuntimeContext();
+    RenderContext context(m_runtime_context);
+    auto &scheduler = context.GetCommandScheduler();
+    HW::Context registers{};
+    HW::UserConfig user_config{};
+    HW::Shader shaders{};
+    scheduler.Begin(registers, user_config, shaders);
+    context.InitializeGpu(nullptr);
+    auto &gpu = context.GetGpu();
+    auto &cache = context.GetBufferCache();
+    int64_t direct_offset = -1;
+    Require(name, "direct allocation",
+            LibKernel::Memory::KernelAllocateDirectMemory(
+                0, LibKernel::Memory::KernelGetDirectMemorySize(), size, size,
+                0, &direct_offset) == 0,
+            "BDA sweep direct allocation failed");
+    void *memory = reinterpret_cast<void *>(base);
+    Require(name, "direct mapping",
+            LibKernel::Memory::KernelMapDirectMemory(
+                &memory, size, 0x3, 0x10, direct_offset, size) == 0 &&
+                memory == reinterpret_cast<void *>(base),
+            "BDA sweep fixed mapping failed");
+    std::memset(memory, 0, size);
+    std::memcpy(memory, &first_value, 4);
+    std::memcpy(reinterpret_cast<void *>(base + page), &second_value, 4);
+    context.MapMemory(base, page);
+    auto readback = CreateHostBuffer(name, 4, vk::BufferUsageFlagBits::eTransferDst, {});
+    gpu.SendCommandSync([&] {
+      const auto first_id = cache.FindBuffer(base, 4);
+      Require(name, "cold tracker setup", cache.IsRegionCpuModified(base, page),
+              "BDA sweep fixture did not start CPU-dirty");
+      const auto expect_sweep = [&](bool hit, const char *stage) {
+        const auto before = ResourceProbe::SnapshotBda();
+        context.PrepareBda();
+        const auto after = ResourceProbe::SnapshotBda();
+        Require(name, stage,
+                after.bda_calls == before.bda_calls + 1 &&
+                    after.bda_sweep_skips - before.bda_sweep_skips ==
+                        (hit && BdaSweepCacheEnabled() ? 1u : 0u),
+                "PrepareBda reused a stale baseline or missed an expected stable hit");
+      };
+      const auto expect_gpu_word = [&](BufferId id, uint64_t address, uint32_t expected,
+                                        const char *stage) {
+        auto &buffer = cache.GetBuffer(id);
+        auto native = scheduler.Current().Handle();
+        vk::BufferMemoryBarrier before{};
+        before.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
+        before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+        before.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        before.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        before.buffer = buffer.Handle();
+        before.size = buffer.Size();
+        native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                               vk::PipelineStageFlagBits::eTransfer, {},
+                               0, nullptr, 1, &before, 0, nullptr);
+        const vk::BufferCopy copy{address - buffer.CpuAddress(), 0, 4};
+        native.copyBuffer(buffer.Handle(), readback.buffer, 1, &copy);
+        auto after = before;
+        after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        after.dstAccessMask = vk::AccessFlagBits::eHostRead;
+        after.buffer = readback.buffer;
+        after.size = 4;
+        native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eHost, {},
+                               0, nullptr, 1, &after, 0, nullptr);
+        scheduler.Finish();
+        const auto words = ReadBuffer(name, readback, 1);
+        Require(name, stage, words[0] == expected,
+                "PrepareBda left stale bytes in the actual native GPU buffer");
+      };
+      expect_sweep(false, "first real sweep");
+      Require(name, "first upload", !cache.IsRegionCpuModified(base, page),
+              "PrepareBda did not consume dirty CPU pages");
+      expect_sweep(true, "second stable sweep");
+      expect_gpu_word(first_id, base, first_value, "initial GPU bytes");
+
+      cache.InvalidateMemory(base, 4);
+      std::memcpy(memory, &updated_value, 4);
+      expect_sweep(false, "CPU write invalidates baseline");
+      expect_gpu_word(first_id, base, updated_value, "updated GPU bytes");
+      expect_sweep(true, "stable after CPU upload");
+
+      // A new catalogue owner outside the renderer's mapped coverage must reject
+      // the old baseline even though no tracked CPU mutation occurs here.
+      const auto previous_revision = cache.GetBdaCatalogRevision();
+      const auto second_id = cache.FindBuffer(base + page, 4);
+      Require(name, "catalogue setup",
+              cache.GetBdaCatalogRevision() != previous_revision,
+              "BDA fixture failed to create a new catalogue owner");
+      expect_sweep(false, "catalogue invalidates baseline");
+      expect_sweep(true, "stable after catalogue change");
+
+      context.MapMemory(base + page, page);
+      expect_sweep(false, "mapping invalidates baseline");
+      Require(name, "new mapping upload",
+              !cache.IsRegionCpuModified(base + page, page),
+              "newly visible mapping retained old CPU-dirty bytes");
+      expect_gpu_word(second_id, base + page, second_value, "new mapping GPU bytes");
+      expect_sweep(true, "stable after mapping change");
+      context.UnmapMemory(base + page, page);
+      expect_sweep(false, "unmapping invalidates baseline");
+      expect_sweep(true, "stable after unmapping");
+      scheduler.Finish();
+    });
+    context.UnmapMemory(base, page);
+    context.ShutdownGpu();
+    DestroyBuffer(&readback);
+    Require(name, "unmap direct backing",
+            LibKernel::Memory::KernelMunmap(base, size) == 0,
+            "BDA sweep fixed mapping release failed");
+    Require(name, "release direct backing",
+            LibKernel::Memory::KernelReleaseDirectMemory(direct_offset, size) == 0,
+            "BDA sweep direct allocation release failed");
+    std::printf("[gpu]     %-32s cache=%u ok\n", name,
+                BdaSweepCacheEnabled() ? 1u : 0u);
   }
 
   void CheckBdaPageTableUploads() {
@@ -42909,6 +43143,11 @@ int main(int argc, char **argv) {
   }
   if (argc == 2 && std::strcmp(argv[1], "--depth-readback-only") == 0) {
     CheckDepthTargetFootprints();
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--bda-sweep-cache-only") == 0) {
+    VulkanHarness vulkan;
+    vulkan.CheckBdaSweepCacheIntegration();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--bda-page-table-only") == 0) {

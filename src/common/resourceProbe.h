@@ -103,12 +103,14 @@ struct BdaTotals {
 	uint64_t bda_mapped_ranges   = 0;
 	// Counts loop entries, including repeated visits and non-intersecting predecessors.
 	uint64_t bda_entries_visited = 0;
+	uint64_t bda_sweep_skips = 0;
 };
 
 struct BdaCounters {
 	std::atomic<uint64_t> bda_calls {0};
 	std::atomic<uint64_t> bda_mapped_ranges {0};
 	std::atomic<uint64_t> bda_entries_visited {0};
+	std::atomic<uint64_t> bda_sweep_skips {0};
 };
 
 inline BdaCounters& BdaData() {
@@ -123,6 +125,7 @@ inline void SubmitBda(const BdaTotals& totals) {
 	Add(data.bda_calls, totals.bda_calls);
 	Add(data.bda_mapped_ranges, totals.bda_mapped_ranges);
 	Add(data.bda_entries_visited, totals.bda_entries_visited);
+	Add(data.bda_sweep_skips, totals.bda_sweep_skips);
 }
 
 inline BdaTotals SnapshotBda() {
@@ -131,6 +134,7 @@ inline BdaTotals SnapshotBda() {
 	    data.bda_calls.load(std::memory_order_relaxed),
 	    data.bda_mapped_ranges.load(std::memory_order_relaxed),
 	    data.bda_entries_visited.load(std::memory_order_relaxed),
+	    data.bda_sweep_skips.load(std::memory_order_relaxed),
 	};
 }
 

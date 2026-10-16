@@ -93,6 +93,7 @@ void BufferCache::ChangeRegister(BufferId id) {
 			m_page_table[page] = {};
 		}
 	}
+	++m_bda_catalog_revision;
 	const auto size_pages = pages.last_exclusive - pages.first;
 	const auto table_offset = PageIndex(buffer.CpuAddress()) * sizeof(vk::DeviceAddress);
 	if constexpr (insert) {
@@ -278,6 +279,7 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	KYTY_PROFILER_FUNCTION();
 	PerfStats::Scope perf_detail(PerfStats::Kind::BufferRead);
+	const auto cpu_write = m_memory_tracker.BeginCpuWrite(is_write);
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",

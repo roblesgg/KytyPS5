@@ -55,6 +55,8 @@ RegionManager* MemoryTracker::GetOrCreateRegion(uint64_t index) {
 	if (auto* manager = m_regions[index].load(std::memory_order_acquire); manager != nullptr) {
 		return manager;
 	}
+	// A newly published RegionManager starts entirely CPU-dirty.
+	const auto cpu_write = BeginCpuWrite();
 	std::lock_guard lock(m_region_mutex);
 	if (auto* manager = m_regions[index].load(std::memory_order_acquire); manager != nullptr) {
 		return manager;
@@ -84,6 +86,7 @@ bool MemoryTracker::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 
 void MemoryTracker::MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size) {
 	CheckNotInUploadCallback();
+	const auto cpu_write = BeginCpuWrite();
 	Iterate<true>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		std::scoped_lock lock(manager->lock);
 		manager->ChangeState<DirtySource::Cpu, true>(manager->GetCpuAddr() + offset, bytes);
@@ -108,6 +111,7 @@ void MemoryTracker::UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size) {
 
 void MemoryTracker::UntrackMemory(uint64_t vaddr, uint64_t size) {
 	CheckNotInUploadCallback();
+	const auto cpu_write = BeginCpuWrite();
 	std::vector<RegionManager*> managers;
 	managers.reserve((vaddr % TRACKER_REGION_SIZE + size + TRACKER_REGION_SIZE - 1) /
 	                 TRACKER_REGION_SIZE);
