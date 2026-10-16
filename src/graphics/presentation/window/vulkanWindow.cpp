@@ -25,10 +25,13 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
@@ -638,6 +641,24 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		image_atomic_int64.sparseImageInt64Atomics = VK_FALSE;
 		create_info.pNext = &image_atomic_int64;
 	}
+	// Diagnostic only: lets a DeviceLost report the faulting GPU addresses afterwards.
+	vk::PhysicalDeviceFaultFeaturesEXT device_fault_features {};
+	graphics.device_fault_ext_enabled = false;
+	if (HasExtension(device_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+		vk::PhysicalDeviceFaultFeaturesEXT supported_fault {};
+		vk::PhysicalDeviceFeatures2        fault_query {};
+		fault_query.pNext = &supported_fault;
+		physical_device.getFeatures2(&fault_query);
+		if (supported_fault.deviceFault == VK_TRUE) {
+			device_fault_features.deviceFault             = VK_TRUE;
+			device_fault_features.deviceFaultVendorBinary = VK_FALSE;
+			device_fault_features.pNext                   = const_cast<void*>(create_info.pNext);
+			create_info.pNext                             = &device_fault_features;
+			graphics.device_fault_ext_enabled             = true;
+		}
+	}
+	LOGF("Vulkan device fault reporting: %s\n",
+	     graphics.device_fault_ext_enabled ? "enabled" : "unavailable");
 	create_info.pQueueCreateInfos       = &queue_create_info;
 	create_info.queueCreateInfoCount    = 1;
 	create_info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
@@ -730,6 +751,33 @@ static void VulkanGetExtensions(VulkanExtensions& r) {
 	}
 }
 
+// Diagnostic switch: exact value "1" keeps running after validation errors and prints each
+// distinct message id up to a small limit instead of terminating on the first error.
+static bool ValidationErrorsNonFatal() {
+	static const bool enabled = [] {
+#ifdef _MSC_VER
+		char*       value  = nullptr;
+		std::size_t length = 0;
+		if (_dupenv_s(&value, &length, "KYTY_VALIDATION_NONFATAL") != 0) return false;
+		const bool result = value != nullptr && length == 2 && value[0] == '1';
+		std::free(value);
+		return result;
+#else
+		const char* value = std::getenv("KYTY_VALIDATION_NONFATAL");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+#endif
+	}();
+	return enabled;
+}
+
+static bool ValidationErrorShouldPrint(int32_t message_id) {
+	static std::mutex                           mutex;
+	static std::unordered_map<int32_t, uint32_t> counts;
+	constexpr uint32_t                           per_id_limit = 3;
+	std::lock_guard                              lock(mutex);
+	return ++counts[message_id] <= per_id_limit;
+}
+
 static VKAPI_ATTR vk::Bool32 VKAPI_CALL VulkanDebugMessengerCallback(
     vk::DebugUtilsMessageSeverityFlagBitsEXT      message_severity,
     vk::DebugUtilsMessageTypeFlagsEXT             message_types,
@@ -776,6 +824,16 @@ static VKAPI_ATTR vk::Bool32 VKAPI_CALL VulkanDebugMessengerCallback(
 		default: severity_str = "?";
 	}
 
+	if (error && ValidationErrorsNonFatal()) {
+		if (ValidationErrorShouldPrint(callback_data->messageIdNumber)) {
+			std::printf("[Vulkan][E-nonfatal][%u][%s]: %s\n", static_cast<uint32_t>(message_types),
+			            callback_data->pMessageIdName != nullptr ? callback_data->pMessageIdName
+			                                                      : "?",
+			            callback_data->pMessage);
+			std::fflush(stdout);
+		}
+		return VK_FALSE;
+	}
 	if (error) {
 		EXIT_COLOR(severity_style, "[Vulkan][%s][%u]: %s\n", severity_str,
 		           static_cast<uint32_t>(message_types), callback_data->pMessage);
@@ -1006,7 +1064,8 @@ void WindowContext::CreateVulkan() {
 		                             VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME,
 		                             VK_EXT_MESH_SHADER_EXTENSION_NAME,
 		                             VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME,
-		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME}) {
+		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
+		                             VK_EXT_DEVICE_FAULT_EXTENSION_NAME}) {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}

@@ -16,6 +16,10 @@
 
 namespace Libs::Graphics {
 
+// Diagnostic: after a DeviceLost, print VK_EXT_device_fault address/vendor records when the
+// device was created with the extension. Safe to call on any result; no-op otherwise.
+void ReportDeviceFaultInfo(GraphicContext& graphics, vk::Result result);
+
 class CommandScheduler {
 public:
 	CommandScheduler(RenderContext& context, GraphicContext& graphics);

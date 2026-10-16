@@ -1,4 +1,4 @@
-name: Build KytyPS5 stable resource and output probes
+﻿name: Build KytyPS5 stable resource and output probes
 
 on:
   workflow_dispatch:
@@ -198,7 +198,7 @@ jobs:
       - name: Record experiment variant and preserve matching symbols
         shell: pwsh
         run: |
-          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; reference_commit = '8509b02d787829cc801cca22256adc2af196df36'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false; resource_probe_available = $true; output_1080_probe_available = $true; bda_probe_available = $true; detailed_tracy_zones_available = $true; native_srt_available = $true; native_srt_consistent_pointers = $true; srt_probe_available = $true; maintenance_probe_available = $true; suspend_point_link_probe_available = $true; bda_sweep_cache_available = $true; batch_indirect_sh_readback_available = $true; null_effective_scalar_address_zero = $true; gpu_compute_tests_packaged = $true; interpreted_srt_switch_available = $true; resource_overlap_diagnostic_available = $true; offline_guest_shader_decode_available = $true } |
+          @{ commit = '${{ github.sha }}'; upstream = '4c8fc53a8582543200caa697acad2a9f09937cec'; reference_commit = '8509b02d787829cc801cca22256adc2af196df36'; dirty_range_fastpath = ${{ matrix.fastpath }}; detailed_timers = $false; resource_probe_available = $true; output_1080_probe_available = $true; bda_probe_available = $true; detailed_tracy_zones_available = $true; native_srt_available = $true; native_srt_consistent_pointers = $true; srt_probe_available = $true; maintenance_probe_available = $true; suspend_point_link_probe_available = $true; bda_sweep_cache_available = $true; batch_indirect_sh_readback_available = $true; null_effective_scalar_address_zero = $true; gpu_compute_tests_packaged = $true; interpreted_srt_switch_available = $true; resource_overlap_diagnostic_available = $true; offline_guest_shader_decode_available = $true; device_fault_report_available = $true; validation_nonfatal_switch_available = $true } |
             ConvertTo-Json | Set-Content _Build/windows/install/experiment.json
           Copy-Item -LiteralPath _Build/windows/shader_recompiler_compute_tests.exe -Destination _Build/windows/install -ErrorAction Stop
           New-Item -ItemType Directory -Path _Build/windows/install/debug -Force | Out-Null

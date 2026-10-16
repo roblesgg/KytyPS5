@@ -5,8 +5,10 @@
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstdio>
 #include <optional>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -29,6 +31,48 @@ void ReportVulkanFatal(const char* what, vk::Result result, uint64_t tick, uint3
 }
 
 } // namespace
+
+void ReportDeviceFaultInfo(GraphicContext& graphics, vk::Result result) {
+	if (result != vk::Result::eErrorDeviceLost || !graphics.device_fault_ext_enabled ||
+	    graphics.device == nullptr) {
+		return;
+	}
+	vk::DeviceFaultCountsEXT counts {};
+	auto                     count_result = graphics.device.getFaultInfoEXT(&counts, nullptr);
+	if (count_result != vk::Result::eSuccess && count_result != vk::Result::eIncomplete) {
+		std::printf("[device-fault] vkGetDeviceFaultInfoEXT(counts) failed: %s\n",
+		            vk::to_string(count_result).c_str());
+		std::fflush(stdout);
+		return;
+	}
+	std::vector<vk::DeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+	std::vector<vk::DeviceFaultVendorInfoEXT>  vendors(counts.vendorInfoCount);
+	vk::DeviceFaultInfoEXT                     info {};
+	counts.vendorBinarySize = 0;
+	info.pAddressInfos      = addresses.empty() ? nullptr : addresses.data();
+	info.pVendorInfos       = vendors.empty() ? nullptr : vendors.data();
+	info.pVendorBinaryData  = nullptr;
+	const auto info_result  = graphics.device.getFaultInfoEXT(&counts, &info);
+	std::printf("[device-fault] result=%s description=\"%s\" addresses=%u vendor_records=%u\n",
+	            vk::to_string(info_result).c_str(), info.description.data(),
+	            counts.addressInfoCount, counts.vendorInfoCount);
+	for (uint32_t i = 0; i < counts.addressInfoCount && i < addresses.size(); ++i) {
+		const auto& a = addresses[i];
+		std::printf("[device-fault] address[%u] type=%s reported=0x%016" PRIx64
+		            " precision=0x%016" PRIx64 "\n",
+		            i, vk::to_string(a.addressType).c_str(),
+		            static_cast<uint64_t>(a.reportedAddress),
+		            static_cast<uint64_t>(a.addressPrecision));
+	}
+	for (uint32_t i = 0; i < counts.vendorInfoCount && i < vendors.size(); ++i) {
+		const auto& v = vendors[i];
+		std::printf("[device-fault] vendor[%u] code=0x%016" PRIx64 " data=0x%016" PRIx64
+		            " description=\"%s\"\n",
+		            i, static_cast<uint64_t>(v.vendorFaultCode),
+		            static_cast<uint64_t>(v.vendorFaultData), v.description.data());
+	}
+	std::fflush(stdout);
+}
 
 CommandScheduler::CommandPool::CommandPool(GraphicContext& graphics, MasterSemaphore& master)
     : m_graphics(graphics), m_master(master) {
@@ -378,6 +422,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 		                  m_command.m_debug_submit_id, m_command.m_debug_arg0,
 		                  m_command.m_debug_arg1, m_command.m_debug_arg2, m_command.m_debug_arg3,
 		                  m_command.m_debug_arg4);
+		ReportDeviceFaultInfo(graphics, result);
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
